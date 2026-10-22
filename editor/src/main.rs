@@ -17,6 +17,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const KEY_PX: u32 = 144;
+const LOGO: &str = include_str!("../../assets/fluxdeck.svg");
 const STRIP: (u32, u32) = (200, 100);
 /// Stream Deck + layout, used while no deck is connected.
 const DEFAULT_LAYOUT: (u8, u8, u8) = (4, 2, 4);
@@ -48,8 +49,13 @@ fn main() -> eframe::Result {
     if let Ok(c) = Config::load() {
         fluxdeck_core::i18n::init(&c.language);
     }
+    let logo = fluxdeck_core::plugins::decode(LOGO.as_bytes(), 128).map(|img| egui::IconData { rgba: img.into_raw(), width: 128, height: 128 });
+    let mut viewport = egui::ViewportBuilder::default();
+    if let Some(icon) = logo {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: viewport
             .with_app_id(format!("{}-editor", fluxdeck_core::paths::NAME))
             .with_title("FluxDeck")
             .with_inner_size([1280.0, 760.0])
@@ -116,6 +122,7 @@ struct App {
     apps_now: (Vec<String>, Instant),
     /// What is being typed to add an app, per group.
     new_app: HashMap<String, String>,
+    logo: Option<TextureHandle>,
 }
 
 /// What the right-click menu of a slot asked for.
@@ -196,6 +203,7 @@ impl App {
             zoom: 0.0,
             apps_now: (Vec::new(), Instant::now() - Duration::from_secs(10)),
             new_app: HashMap::new(),
+            logo: None,
         }
         .with_history()
     }
@@ -383,7 +391,11 @@ impl App {
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.add_space(if narrow { 10.0 } else { 8.0 });
-                ui.label(RichText::new("\u{f078d}").size(24.0).color(accent));
+                let logo = self.logo.get_or_insert_with(|| {
+                    let img = fluxdeck_core::plugins::decode(LOGO.as_bytes(), 64).unwrap_or_else(|| RgbaImage::new(1, 1));
+                    ui.ctx().load_texture("logo", to_egui(&img), TextureOptions::LINEAR)
+                });
+                ui.add(egui::Image::new(&*logo).fit_to_exact_size(vec2(28.0, 28.0)));
                 if !narrow {
                     ui.add_space(4.0);
                     ui.label(RichText::new("FluxDeck").size(19.0).strong());
@@ -1303,6 +1315,8 @@ impl App {
         setting(ui, card, t("Fuente de las teclas"), t("Una familia instalada; los íconos salen de cualquier Nerd Font"), |ui| {
             ui.add(TextEdit::singleline(&mut self.cfg.font).hint_text("sans-serif").desired_width(200.0));
         });
+        ui.add_space(10.0);
+        ui.label(RichText::new(tf("FluxDeck {}", &[env!("CARGO_PKG_VERSION")])).weak().size(12.5));
     }
 
     fn settings_look(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {

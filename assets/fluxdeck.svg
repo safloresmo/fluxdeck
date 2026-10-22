@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#231c3d"/>
+      <stop offset="1" stop-color="#0f0d1a"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c6bbff"/>
+      <stop offset="1" stop-color="#7aa2f7"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#bg)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="57.5" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+  <g fill="none" stroke="url(#wave)" stroke-width="19" stroke-linecap="round" transform="rotate(-14 128 128)">
+    <path d="M52 86 q 25 -26 50 0 t 50 0 t 50 0"/>
+    <path d="M52 128 q 25 -26 50 0 t 50 0 t 50 0"/>
+    <path d="M52 170 q 25 -26 50 0 t 50 0 t 50 0"/>
+  </g>
+</svg>

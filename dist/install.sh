@@ -14,6 +14,7 @@ install -Dm755 "target/release/$name" "$bin/$name"
 install -Dm755 "target/release/$name-editor" "$bin/$name-editor"
 install -Dm644 "dist/$name.service" "$units/$name.service"
 install -Dm644 "dist/$name-editor.desktop" "$apps/$name-editor.desktop"
+install -Dm644 "assets/$name.svg" "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$name.svg"
 
 # A copy started by hand would fight the service for the deck.
 pkill -x "$name" 2>/dev/null || true

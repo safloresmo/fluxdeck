@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=FluxDeck
-Comment=Configura tu Stream Deck
+Comment=Stream Deck, audio y periféricos
+Comment[en]=Stream Deck, audio and peripherals
 Exec=fluxdeck-editor
-Icon=input-keyboard
+Icon=fluxdeck
 Categories=Settings;Utility;
 StartupWMClass=fluxdeck-editor

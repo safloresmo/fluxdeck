@@ -1,47 +1,78 @@
-# FluxDeck
+<p align="center">
+  <img src="assets/fluxdeck.svg" width="128" alt="FluxDeck">
+</p>
 
-Controlador ligero para Stream Deck en Linux, escrito en Rust. Son dos programas:
+<h1 align="center">FluxDeck</h1>
 
-- `fluxdeck`: servicio que habla con el deck. Lee `~/.config/fluxdeck/config.toml`,
-  aplica los cambios al guardar y se reconecta solo si desconectas el USB o suspendes.
-- `fluxdeck-editor`: ventana para configurar teclas, perillas y páginas con vista previa.
+<p align="center">Tu Stream Deck, tu audio y tus periféricos, en una sola app ligera para Linux.</p>
 
-Probado con el Stream Deck +. Los demás modelos que soporta
+FluxDeck junta en un programa lo que normalmente piden tres: el software del Stream Deck, un
+mezclador de audio al estilo Wave Link y el control de periféricos. Está escrito en Rust, sigue
+los colores de tu escritorio y el servicio gasta unos 15 MB de memoria.
+
+Son dos programas:
+
+- `fluxdeck`: el servicio. Habla con el deck, corre los plugins, la cadena de efectos del
+  micrófono y los grupos de apps. Arranca con tu sesión.
+- `fluxdeck-editor`: la ventana para configurarlo todo.
+
+Probado con un Stream Deck +, un Elgato XLR Dock y periféricos Corsair en Arch Linux con
+Hyprland y PipeWire. Los demás modelos que soporta
 [elgato-streamdeck](https://crates.io/crates/elgato-streamdeck) deberían funcionar con el
 servicio; el editor por ahora dibuja la distribución del +.
 
 ## Qué hace
 
-- Teclas: un comando, abrir otra página, o ambas cosas.
-- Perillas: un comando al girar a cada lado y otro al presionar o tocar la tira.
-  `$FLUXDECK_STEPS` dice cuántos pasos giró. Trae plantillas de volumen y micrófono (PipeWire).
-- Estado en vivo: un comando que se repite cada N segundos; su primera línea reemplaza el
-  texto. Puede imprimir `texto|nivel|#color`: `42 dB|0.5` dibuja una barra y
-  `Mute||#b3261e` pinta el fondo de la tecla.
-- Medidor: una perilla puede mostrar el nivel de entrada en vivo de una fuente de PipeWire.
-- Biblioteca de acciones en el editor (sistema, audio, multimedia, Hyprland, XLR Dock, filtros
-  RNNoise). Solo aparece lo que existe en tu equipo.
-- Deslizar la tira táctil cambia de página.
-- Iconos: cualquier glifo de una Nerd Font (el editor los busca por nombre) o una imagen PNG, JPEG o SVG.
-- Plugins de Elgato y OpenDeck, con tienda integrada (ver abajo).
-- Módulos opcionales por marca de periféricos: hoy, Corsair.
+**Deck**
+- Teclas y perillas con comandos, páginas, estados en vivo (`texto|nivel|#color`) y medidores.
+- Biblioteca de acciones: sistema, audio, multimedia, Hyprland, XLR Dock, efectos, Corsair.
+  Solo aparece lo que existe en tu equipo.
+- Arrastrar y soltar, copiar y pegar, deshacer, menú de clic derecho, duplicar páginas.
+- Plugins de Elgato y OpenDeck, con tienda integrada.
+
+**Audio**
+- Mezclador: salida y micrófono en uso, y cada app que suena o graba, con su volumen, silencio,
+  medidor y salida propia.
+- Grupos de apps (Juegos, Música, Navegador, Chat…): cada grupo tiene su volumen y las apps
+  nuevas entran solas. Sin aparatos virtuales: no ensucia los ajustes de sonido del sistema.
+- Perillas del deck para el volumen de una app o de un grupo.
+- Micrófono: cadena de efectos propia (LADSPA, LV2 y los de PipeWire), con instalador de
+  paquetes de efectos, y controles del Elgato XLR Dock.
+
+**Periféricos y más**
+- Módulo Corsair (a través de OpenLinkHub): batería, cancelación de ruido y luces.
+- Inicio con el estado de todo y avisos; tema del escritorio, oscuro, claro o propio; español
+  e inglés.
 
 ## Instalación
 
-Necesitas Rust, `fontconfig` y `libudev` (systemd).
+Necesitas Rust, `fontconfig`, `libudev` (systemd), PipeWire con `wpctl`, `pw-dump` y `pw-record`.
 
 ```sh
-dist/install.sh          # binarios en ~/.local/bin, servicio de usuario y lanzador
+dist/install.sh          # binarios en ~/.local/bin, servicio de usuario, lanzador e ícono
 dist/install.sh --udev   # además, la regla udev (pide tu contraseña)
 ```
 
 La regla udev hace falta si tu usuario no puede abrir el deck (el servicio lo dice en
 `journalctl --user -u fluxdeck`) y para 48 V y Baja Z del XLR Dock. Si el servicio no está
-corriendo, el editor lo avisa arriba a la derecha y lo puede iniciar.
+corriendo, el editor lo avisa y lo puede iniciar.
 
 Atajos del editor: Ctrl+S guarda, Ctrl+Z / Ctrl+Shift+Z deshace y rehace, Ctrl+C / Ctrl+V / Ctrl+D
-copian, pegan y duplican la tecla seleccionada, Supr la quita, Esc suelta la selección y Ctrl+1…4
-cambian de vista. Clic derecho en una tecla o perilla abre las mismas acciones.
+copian, pegan y duplican la tecla seleccionada, Supr la quita, Esc suelta la selección, Ctrl+1…6
+cambian de sección y Ctrl+, abre los ajustes. Clic derecho en una tecla o perilla abre las mismas
+acciones.
+
+## Grupos de apps
+
+En *Audio → Grupos* cada grupo lleva una lista de nombres de apps (basta una parte: «chrom»
+sirve para Chrome y Chromium). El servicio aplica el volumen y el silencio del grupo a esas apps,
+también a las que se abran después. Los niveles se guardan en `~/.local/state/fluxdeck/groups.json`.
+
+```sh
+fluxdeck mix group musica +10     # sube el grupo Música
+fluxdeck mix group chat toggle    # silencia o devuelve el sonido
+fluxdeck mix app spotify =40      # una app suelta
+```
 
 ## Elgato XLR Dock
 

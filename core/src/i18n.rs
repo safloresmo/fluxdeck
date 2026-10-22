@@ -305,6 +305,7 @@ const EN: &[(&str, &str)] = &[
     ("Elige un grupo", "Pick a group"),
     ("Volumen de una app", "App volume"),
     ("Sonando", "Playing"),
+    ("FluxDeck {}", "FluxDeck {}"),
     ("Juegos", "Games"),
     ("Música", "Music"),
     ("Navegador", "Browser"),
