@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["core", "daemon", "editor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+fluxdeck-core = { path = "core" }
+
+[profile.release]
+lto = "thin"
+strip = true
