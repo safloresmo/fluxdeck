@@ -96,6 +96,9 @@ fn app_clean(app: &str) -> String {
     app.chars().filter(|c| !matches!(c, '\'' | '"' | '\\' | '$' | '`')).collect()
 }
 
+/// A "Carpeta" key's page before it is placed: placing it makes the folder page.
+pub const NEW_FOLDER: &str = "\u{0}carpeta";
+
 /// The app id an "Abrir una app" key starts.
 pub fn launched_app(command: &str) -> Option<String> {
     command.strip_prefix("fluxdeck launch '")?.split('\'').next().map(String::from)
@@ -163,6 +166,12 @@ pub fn all(env: &Env) -> Vec<Preset> {
         add("Sistema", "Terminal", key("Terminal", '\u{e795}', t, "", 0.0));
     }
     add("Sistema", "Abrir una app", Item::Key(launch_key(None)));
+    add("Sistema", "Carpeta", Item::Key(Key { label: t("Carpeta").into(), icon: '\u{f024b}'.to_string(), page: NEW_FOLDER.into(), ..Default::default() }));
+    add(
+        "Sistema",
+        "Secuencia de pasos",
+        Item::Key(Key { label: t("Secuencia").into(), icon: '\u{f027b}'.to_string(), steps: vec![crate::Step::Wait { ms: 300 }], ..Default::default() }),
+    );
     add("Sistema", "Carpeta personal", key("Archivos", '\u{f024b}', "xdg-open ~", "", 0.0));
     add("Sistema", "Reloj", key("", '\u{f0150}', "", "date +%H:%M", 1.0));
     add("Sistema", "Uso de CPU", key("CPU", '\u{f0ee0}', "", "top -bn1 | awk '/^%Cpu/ { print int(100 - $8) \"%\" }'", 2.0));
@@ -351,6 +360,19 @@ pub fn all(env: &Env) -> Vec<Preset> {
                     command: format!("fluxdeck corsair anc {id} cycle"),
                     status: format!("fluxdeck corsair anc {id}"),
                     interval: 5.0,
+                    ..Default::default()
+                }),
+            );
+        }
+        if d.lcd {
+            push(
+                "Pantalla de {}",
+                Item::Key(Key {
+                    label: name.clone(),
+                    icon: '\u{f0379}'.to_string(),
+                    command: format!("fluxdeck corsair lcd {id} next"),
+                    status: format!("fluxdeck corsair lcd {id}"),
+                    interval: 10.0,
                     ..Default::default()
                 }),
             );

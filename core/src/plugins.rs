@@ -209,12 +209,16 @@ pub fn image_file(base: &Path, rel: &str) -> Option<PathBuf> {
 fn svg(data: &[u8], size: u32) -> Option<RgbaImage> {
     // Loading system fonts takes a moment, so it happens once and only when an SVG shows up.
     static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> = std::sync::OnceLock::new();
-    let fonts = FONTS.get_or_init(|| {
-        let mut db = resvg::usvg::fontdb::Database::new();
-        db.load_system_fonts();
-        std::sync::Arc::new(db)
-    });
-    let opt = resvg::usvg::Options { fontdb: fonts.clone(), ..Default::default() };
+    let fonts = || {
+        FONTS.get_or_init(|| {
+            let mut db = resvg::usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            std::sync::Arc::new(db)
+        })
+    };
+    // Fonts take tens of megabytes; only SVGs with text need them.
+    let has_text = data.windows(5).any(|w| w == b"<text");
+    let opt = if has_text { resvg::usvg::Options { fontdb: fonts().clone(), ..Default::default() } } else { resvg::usvg::Options::default() };
     let tree = resvg::usvg::Tree::from_data(data, &opt).ok()?;
     let mut pix = resvg::tiny_skia::Pixmap::new(size, size)?;
     let s = tree.size();

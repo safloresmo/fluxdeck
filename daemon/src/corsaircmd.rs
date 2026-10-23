@@ -5,7 +5,7 @@ use fluxdeck_core::i18n::t;
 const RED: &str = "#b3261e";
 const AMBER: &str = "#8a5a00";
 
-const USAGE: &str = "usage: fluxdeck corsair list | battery ID | anc ID [cycle|off|on|transparency] | brightness ID [up|down] | effect ID [next|prev]";
+const USAGE: &str = "usage: fluxdeck corsair list | battery ID | anc ID [cycle|off|on|transparency] | brightness ID [up|down] | effect ID [next|prev] | lcd ID [next|prev|MODE]";
 
 pub fn command(args: &[String]) -> Result<(), String> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -70,6 +70,20 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 corsair::set_effect(id, &effect)?;
             }
             println!("{effect}");
+        }
+        ["lcd", id, rest @ ..] => {
+            let (modes, mut mode, _) = corsair::lcd(id).ok_or("this device has no screen")?;
+            if let [change] = rest {
+                let i = modes.iter().position(|(m, _)| *m == mode).unwrap_or(0);
+                mode = match *change {
+                    "next" => modes[(i + 1) % modes.len()].0,
+                    "prev" => modes[(i + modes.len() - 1) % modes.len()].0,
+                    n => n.parse().map_err(|_| USAGE.to_string())?,
+                };
+                corsair::set_lcd(id, mode)?;
+            }
+            let name = modes.iter().find(|(m, _)| *m == mode).map(|(_, n)| corsair::lcd_mode_name(n)).unwrap_or_default();
+            println!("{name}");
         }
         _ => return Err(USAGE.into()),
     }

@@ -1,12 +1,14 @@
 mod corsaircmd;
 mod effectscmd;
 mod effectsrun;
+mod extrakeys;
 mod groupsrun;
 mod mixcmd;
 mod plugincmd;
 mod plugins;
 mod profilesrun;
 mod pwcmd;
+mod tray;
 mod xlr;
 
 use fluxdeck_core::image::{DynamicImage, RgbaImage};
@@ -53,6 +55,8 @@ pub(crate) enum Msg {
     Inspector(String, bool),
     /// A profile wants this page shown, or (None) the page from before it.
     ProfilePage(Option<String>),
+    /// A key's sequence reached a "go to page" step.
+    GoPage(String),
     Status { generation: u64, slot: Slot, text: String },
     Meter { generation: u64, slot: Slot, level: f32 },
 }
@@ -92,6 +96,8 @@ fn daemon() {
     effectsrun::start();
     groupsrun::start();
     profilesrun::start(tx.clone());
+    extrakeys::start(tx.clone());
+    tray::start(tx.clone());
     let host = Host::start(tx.clone());
     if host.is_none() {
         eprintln!("fluxdeck: no free port for plugins; they are off");
@@ -322,6 +328,11 @@ impl Session {
                             if self.return_to.is_none() {
                                 self.return_to = Some((self.page, i));
                             }
+                            self.open_page(i);
+                        }
+                    }
+                    Msg::GoPage(name) => {
+                        if let Some(i) = self.cfg.page_index(&name) {
                             self.open_page(i);
                         }
                     }
@@ -611,6 +622,9 @@ impl Session {
                     self.open_page(target);
                 }
                 self.act(Slot::Key(i), &key.command, 1);
+                if !key.steps.is_empty() {
+                    run_steps(key.steps.clone(), self.tx.clone());
+                }
             }
             DeviceStateUpdate::ButtonUp(i) => {
                 if self.plugin_event(Slot::Key(i), "keyUp", json!({})) {
@@ -642,8 +656,13 @@ impl Session {
                 }
             }
             DeviceStateUpdate::TouchScreenSwipe((x0, _), (x1, _)) => {
+                // Folders are reached from their key, so swiping walks the other pages.
                 let n = self.cfg.pages.len();
-                let next = if x1 < x0 { (self.page + 1) % n } else { (self.page + n - 1) % n };
+                let step = |p: usize| if x1 < x0 { (p + 1) % n } else { (p + n - 1) % n };
+                let mut next = step(self.page);
+                while self.cfg.pages[next].folder && next != self.page {
+                    next = step(next);
+                }
                 self.open_page(next);
             }
             _ => {}
@@ -735,11 +754,16 @@ impl Session {
         let size = self.kind.key_image_format().size.0 as u32;
         for i in 0..self.kind.key_count() {
             let st = self.status.get(&Slot::Key(i)).cloned();
+            let plugin = page.key(i).filter(|k| !k.instance.is_empty()).map(|k| k.instance.clone());
             let img = match page.key(i) {
                 Some(k) if !k.instance.is_empty() => self.plugin_key_image(k, size),
                 k => self.painter.key(k, st.as_deref(), &self.theme, size),
             };
             if self.changed(Slot::Key(i), &img) {
+                // The editor shows what the plugin draws, not just its manifest icon.
+                if let Some(instance) = plugin {
+                    let _ = img.save(fluxdeck_core::paths::runtime(&format!("plugin-{instance}.png")));
+                }
                 self.deck.set_button_image(i, DynamicImage::ImageRgba8(img))?;
             }
         }
@@ -779,6 +803,35 @@ impl Session {
             self.published = Some(state);
         }
     }
+}
+
+/// Runs a key's sequence in its own thread: each command ends (or ten seconds pass) before the next step.
+pub(crate) fn run_steps(steps: Vec<fluxdeck_core::Step>, tx: Sender<Msg>) {
+    use fluxdeck_core::Step;
+    thread::spawn(move || {
+        for step in steps {
+            match step {
+                Step::Command { run } => match shell(&run, 1).stdout(Stdio::null()).spawn() {
+                    Ok(mut child) => {
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                        // Long-lived programs keep running on their own.
+                        thread::spawn(move || child.wait());
+                    }
+                    Err(e) => eprintln!("fluxdeck: cannot run `{run}`: {e}"),
+                },
+                Step::Wait { ms } => thread::sleep(Duration::from_millis(ms.min(60_000) as u64)),
+                Step::Page { name } => drop(tx.send(Msg::GoPage(name))),
+                Step::App { id } => {
+                    if let Some(app) = fluxdeck_core::apps::find(&id) {
+                        let _ = fluxdeck_core::apps::launch(&app);
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// A small tick or cross in the corner, for showOk / showAlert.

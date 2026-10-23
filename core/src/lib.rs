@@ -14,7 +14,7 @@ pub mod pw;
 pub mod render;
 pub mod state;
 
-pub use config::{Config, Dial, Key, Page, Theme};
+pub use config::{Config, Dial, Key, Page, Step, Theme};
 pub use image;
 pub use render::Painter;
 pub use state::State;

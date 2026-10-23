@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 enum Write {
+    Lcd(String, u8),
+    Rotation(String, u8),
     Anc(String, i64),
     Brightness(String, u8),
     Effect(String, String),
@@ -51,6 +53,8 @@ impl Devices {
             std::thread::spawn(move || {
                 while let Ok(w) = rx.recv() {
                     let r = match &w {
+                        Write::Lcd(id, m) => corsair::set_lcd(id, *m),
+                        Write::Rotation(id, r) => corsair::set_lcd_rotation(id, *r),
                         Write::Anc(id, m) => corsair::set_anc(id, *m),
                         Write::Brightness(id, b) => corsair::set_brightness(id, *b),
                         Write::Effect(id, e) => corsair::set_effect(id, e),
@@ -101,18 +105,21 @@ impl Devices {
             return;
         }
         let list = self.list.clone();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(20.0);
-                for d in &list {
-                    card_frame(card).show(ui, |ui| {
-                        ui.set_width(300.0);
-                        ui.vertical(|ui| self.card(ui, d, accent));
-                    });
-                    ui.add_space(12.0);
-                }
-            });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(20.0);
+            for d in &list {
+                card_frame(card).show(ui, |ui| {
+                    ui.set_width(300.0);
+                    ui.vertical(|ui| self.card(ui, d, accent));
+                });
+                ui.add_space(12.0);
+            }
         });
+    }
+
+    /// The keyboard with G keys, if OpenLinkHub sees one.
+    pub fn keyboard(&self) -> Option<String> {
+        self.list.iter().find(|d| d.kind == Some(0)).map(|d| d.serial.clone())
     }
 
     fn card(&mut self, ui: &mut egui::Ui, d: &corsair::Device, accent: Color32) {
@@ -160,7 +167,27 @@ impl Devices {
                 }
             });
         }
-        if live.battery.is_none() && live.anc.is_none() && live.brightness.is_none() && live.effect.is_none() {
+        if let Some((modes, mode, rotation)) = live.lcd.clone() {
+            ui.add_space(8.0);
+            ui.label(t("Pantalla"));
+            ui.horizontal(|ui| {
+                let shown = modes.iter().find(|(m, _)| *m == mode).map_or("—".to_string(), |(_, n)| corsair::lcd_mode_name(n));
+                egui::ComboBox::from_id_salt(("lcd", &d.serial)).selected_text(shown).width(190.0).show_ui(ui, |ui| {
+                    for (m, name) in &modes {
+                        if ui.selectable_label(*m == mode, corsair::lcd_mode_name(name)).clicked() && *m != mode {
+                            live.lcd = Some((modes.clone(), *m, rotation));
+                            self.send(Write::Lcd(d.serial.clone(), *m));
+                        }
+                    }
+                });
+                if ui.button(format!("↻ {}", t("Girar"))).on_hover_text(format!("{}°", rotation as u32 * 90)).clicked() {
+                    let r = (rotation + 1) % 4;
+                    live.lcd = Some((modes.clone(), mode, r));
+                    self.send(Write::Rotation(d.serial.clone(), r));
+                }
+            });
+        }
+        if live.battery.is_none() && live.anc.is_none() && live.brightness.is_none() && live.effect.is_none() && live.lcd.is_none() {
             ui.label(RichText::new(t("Sin ajustes que controlar desde aquí.")).weak().size(12.5));
         }
         self.shown.insert(d.serial.clone(), live);

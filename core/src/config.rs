@@ -18,6 +18,9 @@ pub struct Config {
     /// Editor size: 0.9 compact, 1.0 normal, 1.15 comfortable.
     #[serde(skip_serializing_if = "is_one")]
     pub ui_scale: f32,
+    /// What each extra key does: "F13" … "F24" (the K100's G keys send F13–F16 once set up).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra_keys: std::collections::BTreeMap<String, Vec<Step>>,
     /// Profiles that switch on with the focused app.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<crate::profiles::Profile>,
@@ -53,6 +56,9 @@ pub struct Page {
     pub keys: Vec<Key>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dials: Vec<Dial>,
+    /// Opened from a key and left with its back key; swiping the strip skips it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub folder: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
@@ -83,6 +89,23 @@ pub struct Key {
     /// Id of this placed plugin action, kept when the key moves so its settings follow it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub instance: String,
+    /// Steps run one after another on a press, after `command`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Step>,
+}
+
+/// One step of a key's sequence.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Step {
+    /// A shell command; the next step waits for it to end (up to ten seconds).
+    Command { run: String },
+    /// A pause, in milliseconds.
+    Wait { ms: u32 },
+    /// Show a deck page.
+    Page { name: String },
+    /// Open an installed app by its .desktop id.
+    App { id: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
@@ -135,8 +158,9 @@ impl Default for Config {
             hidden_devices: Vec::new(),
             groups: Vec::new(),
             profiles: Vec::new(),
+            extra_keys: Default::default(),
             modules: Vec::new(),
-            pages: vec![Page { name: "inicio".into(), keys: vec![], dials: vec![] }],
+            pages: vec![Page { name: "inicio".into(), ..Default::default() }],
         }
     }
 }
@@ -280,6 +304,17 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequences_read_back() {
+        let key = Key { pos: 1, steps: vec![Step::Command { run: "a".into() }, Step::Wait { ms: 500 }, Step::Page { name: "stream".into() }, Step::App { id: "obs".into() }], ..Default::default() };
+        let page = Page { name: "p".into(), keys: vec![key.clone()], ..Default::default() };
+        let cfg = Config { pages: vec![page], ..Default::default() };
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("type = \"wait\""));
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.pages[0].keys[0].steps, key.steps);
+    }
 
     #[test]
     fn roundtrip_keeps_everything() {

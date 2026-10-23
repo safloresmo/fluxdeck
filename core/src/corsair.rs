@@ -15,6 +15,8 @@ pub struct Device {
     pub kind: Option<u64>,
     pub anc: bool,
     pub lights: bool,
+    /// Has a screen (Nautilus LCD Cap and pump LCDs).
+    pub lcd: bool,
 }
 
 fn http(method: &str, path: &str, body: Option<Value>) -> Option<Value> {
@@ -60,6 +62,8 @@ pub struct Live {
     pub brightness: Option<usize>,
     pub effect: Option<String>,
     pub effects: Vec<String>,
+    /// Screen modes, the mode in use and the rotation, for devices with a screen.
+    pub lcd: Option<(Vec<(u8, String)>, u8, u8)>,
 }
 
 pub fn live(serial: &str) -> Live {
@@ -71,6 +75,7 @@ pub fn live(serial: &str) -> Live {
         brightness: p["Brightness"].as_u64().map(level_index),
         effect: p["RGBProfile"].as_str().map(String::from),
         effects: effects_of(d),
+        lcd: (d["HasLCD"] == true).then(|| lcd(serial)).flatten(),
     }
 }
 
@@ -94,6 +99,7 @@ pub fn battery(serial: &str) -> Option<u64> {
 /// Visible devices; empty when OpenLinkHub is not running.
 pub fn devices() -> Vec<Device> {
     let Some(list) = http("GET", "/api/devices/", None) else { return Vec::new() };
+    let has_lcd = |serial: &str| http("GET", &format!("/api/devices/{serial}"), None).is_some_and(|d| d["device"]["HasLCD"] == true);
     let batteries = http("GET", "/api/batteryStats", None).unwrap_or_default();
     let mut out: Vec<Device> = list["devices"]
         .as_object()
@@ -109,6 +115,7 @@ pub fn devices() -> Vec<Device> {
                 kind: batteries["data"][serial]["DeviceType"].as_u64(),
                 anc: p["NoiseCancellation"].is_i64(),
                 lights: p["RGBProfile"].is_string(),
+                lcd: has_lcd(serial),
             }
         })
         .collect();
@@ -123,6 +130,73 @@ pub fn icon(kind: Option<u64>) -> char {
         Some(1) => '\u{f037d}',
         Some(2) => '\u{f02ce}',
         _ => '\u{f0079}',
+    }
+}
+
+/// A screen's modes (number, OpenLinkHub's name), sorted, and the one in use.
+pub fn lcd(serial: &str) -> Option<(Vec<(u8, String)>, u8, u8)> {
+    let d = http("GET", &format!("/api/devices/{serial}"), None)?;
+    let d = &d["device"];
+    let mut modes: Vec<(u8, String)> = d["LCDModes"].as_object()?.iter().filter_map(|(k, v)| Some((k.parse().ok()?, v.as_str()?.to_string()))).collect();
+    modes.sort();
+    let p = &d["DeviceProfile"];
+    Some((modes, p["LCDMode"].as_u64().unwrap_or(0) as u8, p["LCDRotation"].as_u64().unwrap_or(0) as u8))
+}
+
+pub fn set_lcd(serial: &str, mode: u8) -> Result<(), String> {
+    post("/api/lcd", json!({ "deviceId": serial, "channelId": 0, "mode": mode }))
+}
+
+/// 0, 1, 2 or 3 quarter turns.
+pub fn set_lcd_rotation(serial: &str, rotation: u8) -> Result<(), String> {
+    post("/api/lcd/rotation", json!({ "deviceId": serial, "channelId": 0, "rotation": rotation }))
+}
+
+/// Keyboard keys with a G name (G1, G2…), by their id in the keyboard's active layout.
+pub fn g_keys(serial: &str) -> Vec<(String, u64, bool)> {
+    let Some(d) = http("GET", &format!("/api/devices/{serial}"), None) else { return Vec::new() };
+    let profile = &d["device"]["DeviceProfile"];
+    let layout = profile["Profile"].as_str().unwrap_or("default");
+    let rows = profile["Keyboards"][layout]["row"].as_object().cloned().unwrap_or_default();
+    let mut out: Vec<(String, u64, bool)> = rows
+        .values()
+        .flat_map(|r| r["keys"].as_object().cloned().unwrap_or_default())
+        .filter_map(|(id, k)| {
+            let name = k["keyName"].as_str()?.to_string();
+            let id: u64 = id.parse().ok()?;
+            (name.starts_with('G') && name[1..].parse::<u8>().is_ok()).then(|| (name, id, k["default"] != false))
+        })
+        .collect();
+    out.sort_by_key(|(n, _, _)| n[1..].parse::<u8>().unwrap_or(0));
+    out
+}
+
+/// Makes a key send F13 + `offset` (OpenLinkHub's "Keyboard" action), or gives it back its own job.
+pub fn set_g_key(serial: &str, key: u64, offset: Option<u16>) -> Result<(), String> {
+    let body = match offset {
+        Some(o) => json!({ "deviceId": serial, "keyIndex": key, "enabled": false, "keyAssignmentType": 3, "keyAssignmentValue": 112 + o,
+            "pressAndHold": false, "keyAssignmentModifier": 0, "keyAssignmentOriginal": false, "toggleDelay": 30, "onRelease": false }),
+        None => json!({ "deviceId": serial, "keyIndex": key, "enabled": true, "keyAssignmentType": 0, "keyAssignmentValue": 0,
+            "pressAndHold": false, "keyAssignmentModifier": 0, "keyAssignmentOriginal": false, "toggleDelay": 30, "onRelease": false }),
+    };
+    post("/api/keyboard/updateKeyAssignment", body)
+}
+
+/// Spanish names for OpenLinkHub's screen modes; unknown ones keep theirs.
+pub fn lcd_mode_name(name: &str) -> String {
+    let t = |s: &'static str| crate::i18n::t(s).to_string();
+    match name {
+        "CPU Temperature" => t("Temperatura del CPU"),
+        "GPU Temperature" => t("Temperatura de la GPU"),
+        "CPU / GPU Temp" => t("Temperatura CPU y GPU"),
+        "CPU / GPU Load" => t("Carga CPU y GPU"),
+        "CPU / GPU Load/Temp" => t("Carga y temperatura"),
+        "Time" => t("Hora"),
+        "Image / GIF" => t("Imagen o GIF"),
+        "Arc" => t("Arco"),
+        "Double Arc" => t("Arco doble"),
+        "Animation" => t("Animación"),
+        other => other.to_string(),
     }
 }
 

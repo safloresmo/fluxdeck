@@ -79,7 +79,7 @@ struct App {
     painter: Painter,
     font: String,
     textures: HashMap<Sel, TextureHandle>,
-    drawn: Option<(Page, Theme, String, HashMap<Sel, String>)>,
+    drawn: Option<(Page, Theme, String, HashMap<Sel, String>, Vec<Option<std::time::SystemTime>>)>,
     /// Status output from t("Probar"), shown while the deck is not on this page.
     tested: HashMap<Sel, String>,
     live: Option<State>,
@@ -126,6 +126,8 @@ struct App {
     logo: Option<TextureHandle>,
     installed_apps: Option<Vec<fluxdeck_core::apps::App>>,
     profile_sel: usize,
+    /// The keyboard's G keys (name, id, still on its own job) and when that was read.
+    gkeys: (Vec<(String, u64, bool)>, Instant),
     /// The action library on narrow windows, where it hides behind a button.
     lib_open: bool,
     /// Library groups the user folded, remembered between runs.
@@ -218,6 +220,7 @@ impl App {
             logo: None,
             installed_apps: None,
             profile_sel: 0,
+            gkeys: (Vec::new(), Instant::now() - Duration::from_secs(60)),
             lib_open: false,
             folded: std::fs::read_to_string(fluxdeck_core::paths::state().join("library-folded")).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect(),
             windows: (Vec::new(), Instant::now() - Duration::from_secs(10)),
@@ -460,7 +463,7 @@ impl App {
         match v {
             View::Home | View::Deck | View::Plugins | View::Profiles | View::Settings => true,
             View::Mic => true,
-            View::Devices => self.cfg.module("corsair"),
+            View::Devices => true,
         }
     }
 
@@ -580,9 +583,19 @@ impl App {
         }
     }
 
+    /// When each plugin key's live image last changed, so previews redraw when a plugin draws.
+    fn plugin_images(&self) -> Vec<Option<std::time::SystemTime>> {
+        self.cfg.pages[self.page]
+            .keys
+            .iter()
+            .filter(|k| !k.instance.is_empty())
+            .map(|k| std::fs::metadata(fluxdeck_core::paths::runtime(&format!("plugin-{}.png", k.instance))).and_then(|m| m.modified()).ok())
+            .collect()
+    }
+
     /// Re-renders the previews only when something they show changed.
     fn refresh(&mut self, ctx: &egui::Context) {
-        let state = (self.cfg.pages[self.page].clone(), self.theme.clone(), self.cfg.font.clone(), self.preview());
+        let state = (self.cfg.pages[self.page].clone(), self.theme.clone(), self.cfg.font.clone(), self.preview(), self.plugin_images());
         if self.drawn.as_ref() == Some(&state) {
             return;
         }
@@ -591,10 +604,14 @@ impl App {
             self.font = self.cfg.font.clone();
         }
         let (cols, rows, dials) = self.layout();
-        let (page, theme, _, preview) = &state;
+        let (page, theme, _, preview, _) = &state;
         for i in 0..cols * rows {
             let img = match page.key(i) {
-                Some(k) if !k.action.is_empty() => self.painter.plugin_key(self.painter.image(&k.icon, KEY_PX).as_ref(), &k.label, theme, KEY_PX),
+                Some(k) if !k.action.is_empty() => match live_plugin_image(&k.instance) {
+                    // What the deck shows now, as the plugin drew it.
+                    Some(img) => img,
+                    None => self.painter.plugin_key(self.painter.image(&k.icon, KEY_PX).as_ref(), &k.label, theme, KEY_PX),
+                },
                 k => self.painter.key(k, preview.get(&Sel::Key(i)).map(String::as_str), theme, KEY_PX),
             };
             self.textures.insert(Sel::Key(i), ctx.load_texture(format!("key{i}"), to_egui(&img), TextureOptions::LINEAR));
@@ -677,7 +694,8 @@ impl App {
                     break;
                 }
                 let name = self.cfg.pages[i].name.clone();
-                let resp = ui.selectable_label(self.page == i, RichText::new(&name).size(15.0));
+                let shown = if self.cfg.pages[i].folder { format!("\u{f024b} {name}") } else { name.clone() };
+                let resp = ui.selectable_label(self.page == i, RichText::new(shown).size(15.0));
                 if resp.clicked() {
                     self.select_page(i);
                 }
@@ -805,6 +823,22 @@ impl App {
     }
 
     fn apply_preset(&mut self, i: usize, target: Sel) {
+        // A folder key brings its own page, with a key back to where it was placed.
+        if let (Item::Key(k), Sel::Key(pos)) = (&self.presets[i].item, target)
+            && k.page == presets::NEW_FOLDER
+        {
+            let here = self.cfg.pages[self.page].name.clone();
+            let base = t("Carpeta").to_string();
+            let name = (1..).map(|n| format!("{base} {n}")).find(|n| self.cfg.page_index(n).is_none()).unwrap_or(base);
+            let back = Key { pos: 0, label: t("Volver").into(), icon: "\u{f004d}".into(), page: here, ..Default::default() };
+            self.cfg.pages.push(Page { name: name.clone(), keys: vec![back], folder: true, ..Default::default() });
+            let page = &mut self.cfg.pages[self.page];
+            page.keys.retain(|k| k.pos != pos);
+            page.keys.push(Key { pos, label: name.clone(), page: name.clone(), ..k.clone() });
+            self.sel = Some(target);
+            self.notice = tf("Carpeta «{}» creada: ábrela en su pestaña para llenarla", &[&name]);
+            return;
+        }
         let page = &mut self.cfg.pages[self.page];
         match (&self.presets[i].item, target) {
             (Item::Key(k), Sel::Key(pos)) => {
@@ -826,6 +860,69 @@ impl App {
         }
         self.tested.remove(&target);
         self.sel = Some(target);
+    }
+
+    /// G keys and other extra keys (F13–F24): set the K100's G keys up in OpenLinkHub, and what each key does.
+    fn extra_keys_ui(&mut self, ui: &mut egui::Ui, card: Color32) {
+        if self.gkeys.1.elapsed() > Duration::from_secs(10) {
+            let keys = self.devices.keyboard().map(|k| fluxdeck_core::corsair::g_keys(&k)).unwrap_or_default();
+            self.gkeys = (keys, Instant::now());
+        }
+        let pages: Vec<String> = self.cfg.pages.iter().map(|p| p.name.clone()).collect();
+        let apps = self.installed_apps.get_or_insert_with(fluxdeck_core::apps::installed).clone();
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            egui::Frame::new().fill(card).corner_radius(18).inner_margin(20).show(ui, |ui| {
+                ui.set_width((ui.available_width() - 40.0).min(760.0));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(t("Teclas G y teclas extra")).size(17.0).strong());
+                    ui.label(RichText::new(t("Cada tecla corre una secuencia, como una tecla del deck. Sirve con cualquier teclado que tenga F13–F24.")).weak().size(12.5));
+                    let gkeys = self.gkeys.0.clone();
+                    if let (Some(kb), false) = (self.devices.keyboard(), gkeys.is_empty()) {
+                        ui.add_space(8.0);
+                        let ready = gkeys.iter().all(|(_, _, default)| !default);
+                        ui.horizontal(|ui| {
+                            let names: Vec<&str> = gkeys.iter().map(|(n, _, _)| n.as_str()).collect();
+                            if !ready && ui.button(tf("Usar {} con FluxDeck", &[&names.join(", ")])).on_hover_text(t("En OpenLinkHub, cada tecla G pasa a mandar F13, F14…")).clicked() {
+                                let failed = gkeys.iter().enumerate().filter(|(i, (_, id, _))| fluxdeck_core::corsair::set_g_key(&kb, *id, Some(*i as u16)).is_err()).count();
+                                self.notice = if failed == 0 { t("Teclas G listas").into() } else { t("OpenLinkHub no aceptó el cambio").into() };
+                                self.gkeys.1 = Instant::now() - Duration::from_secs(60);
+                            }
+                            if ready && ui.button(t("Devolverlas a su función original")).clicked() {
+                                for (_, id, _) in &gkeys {
+                                    let _ = fluxdeck_core::corsair::set_g_key(&kb, *id, None);
+                                }
+                                self.notice = t("Teclas G restauradas").into();
+                                self.gkeys.1 = Instant::now() - Duration::from_secs(60);
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
+                    // G keys first, by name; then any other extra key that already has steps.
+                    let mut rows: Vec<(String, String)> = self.gkeys.0.iter().enumerate().map(|(i, (n, _, _))| (format!("F{}", 13 + i), n.clone())).collect();
+                    for k in self.cfg.extra_keys.keys() {
+                        if !rows.iter().any(|(f, _)| f == k) {
+                            rows.push((k.clone(), k.clone()));
+                        }
+                    }
+                    if rows.is_empty() {
+                        rows.push(("F13".into(), "F13".into()));
+                    }
+                    for (fkey, name) in rows {
+                        ui.add_space(6.0);
+                        let label = if name == fkey { name.clone() } else { format!("{name}  ({fkey})") };
+                        egui::CollapsingHeader::new(RichText::new(label).strong()).id_salt(("xk", &fkey)).show(ui, |ui| {
+                            let steps = self.cfg.extra_keys.entry(fkey.clone()).or_default();
+                            steps_editor(ui, steps, &pages, &apps);
+                        });
+                    }
+                    // Keys left without steps are not kept in the config.
+                    self.cfg.extra_keys.retain(|_, s| !s.is_empty());
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(t("Guarda para aplicar los cambios.")).weak().size(12.5));
+                });
+            });
+        });
     }
 
     /// Perfiles: a list on the left, the chosen profile on the right.
@@ -1524,6 +1621,7 @@ impl App {
                 self.page += 1;
             }
         });
+        ui.checkbox(&mut self.cfg.pages[self.page].folder, t("Es una carpeta: se abre desde su tecla y deslizar la tira la salta"));
         ui.label(RichText::new(t("La primera página es la que se muestra al conectar el deck.")).weak().size(12.5));
 
         ui.add_space(16.0);
@@ -1735,6 +1833,7 @@ impl App {
     fn key_editor(&mut self, ui: &mut egui::Ui, i: u8) {
         self.header(ui, &tf("Tecla {}", &[&(i + 1).to_string()]));
         let pages: Vec<String> = self.cfg.pages.iter().map(|p| p.name.clone()).collect();
+        let apps = self.installed_apps.get_or_insert_with(fluxdeck_core::apps::installed).clone();
         let page = &mut self.cfg.pages[self.page];
         let Some(idx) = page.keys.iter().position(|k| k.pos == i) else {
             ui.add_space(6.0);
@@ -1802,6 +1901,9 @@ impl App {
                 }
             });
         });
+
+        section(ui, t("Secuencia"));
+        steps_editor(ui, &mut key.steps, &pages, &apps);
 
         section(ui, t("Estado en vivo"));
         code(ui, t("Comando"), &mut key.status, "date +%H:%M");
@@ -1998,7 +2100,14 @@ impl eframe::App for App {
         if self.view == View::Devices {
             let card = ui.visuals().faint_bg_color;
             let accent = self.accent();
-            egui::CentralPanel::default().show(ui, |ui| self.devices.ui(ui, card, accent));
+            egui::CentralPanel::default().show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.devices.ui(ui, card, accent);
+                    ui.add_space(14.0);
+                    self.extra_keys_ui(ui, card);
+                    ui.add_space(20.0);
+                });
+            });
             self.close_guard(&ctx);
             return;
         }
@@ -2157,6 +2266,82 @@ fn color_field(ui: &mut egui::Ui, value: &mut String) -> bool {
         *value = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
     }
     changed
+}
+
+/// The image the service last sent to the deck for a plugin key.
+fn live_plugin_image(instance: &str) -> Option<RgbaImage> {
+    let img = fluxdeck_core::image::open(fluxdeck_core::paths::runtime(&format!("plugin-{instance}.png"))).ok()?.to_rgba8();
+    Some(fluxdeck_core::image::imageops::resize(&img, KEY_PX, KEY_PX, fluxdeck_core::image::imageops::FilterType::Triangle))
+}
+
+/// A key's sequence: one row per step, in order, with buttons to add, move and remove.
+fn steps_editor(ui: &mut egui::Ui, steps: &mut Vec<fluxdeck_core::Step>, pages: &[String], apps: &[fluxdeck_core::apps::App]) {
+    use fluxdeck_core::Step;
+    ui.label(RichText::new(t("Pasos que se hacen en orden al presionar, después del comando.")).weak().size(12.5));
+    let mut action: Option<(usize, i32)> = None;
+    let n = steps.len();
+    for (i, step) in steps.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{}.", i + 1)).weak());
+            match step {
+                Step::Command { run } => {
+                    ui.label(t("Comando"));
+                    ui.add(TextEdit::singleline(run).code_editor().desired_width(170.0));
+                }
+                Step::Wait { ms } => {
+                    ui.label(t("Esperar"));
+                    ui.add(egui::DragValue::new(ms).range(0..=60_000).speed(10.0).suffix(" ms"));
+                }
+                Step::Page { name } => {
+                    ui.label(t("Ir a página"));
+                    egui::ComboBox::from_id_salt(("step_page", i)).selected_text(if name.is_empty() { "—" } else { name.as_str() }).show_ui(ui, |ui| {
+                        for p in pages {
+                            ui.selectable_value(name, p.clone(), p);
+                        }
+                    });
+                }
+                Step::App { id } => {
+                    ui.label(t("Abrir app"));
+                    let shown = apps.iter().find(|a| a.id == *id).map_or("—".to_string(), |a| a.name.clone());
+                    egui::ComboBox::from_id_salt(("step_app", i)).selected_text(shown).width(150.0).show_ui(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                            for a in apps {
+                                ui.selectable_value(id, a.id.clone(), &a.name);
+                            }
+                        });
+                    });
+                }
+            }
+            if ui.small_button("✕").on_hover_text(t("Quitar paso")).clicked() {
+                action = Some((i, 0));
+            }
+            if ui.add_enabled(i + 1 < n, egui::Button::new("↓").small()).clicked() {
+                action = Some((i, 1));
+            }
+            if ui.add_enabled(i > 0, egui::Button::new("↑").small()).clicked() {
+                action = Some((i, -1));
+            }
+        });
+    }
+    match action {
+        Some((i, 0)) => drop(steps.remove(i)),
+        Some((i, d)) => steps.swap(i, (i as i32 + d) as usize),
+        None => {}
+    }
+    ui.horizontal_wrapped(|ui| {
+        if ui.small_button(t("+ Comando")).clicked() {
+            steps.push(Step::Command { run: String::new() });
+        }
+        if ui.small_button(t("+ Esperar")).clicked() {
+            steps.push(Step::Wait { ms: 500 });
+        }
+        if ui.small_button(t("+ Página")).clicked() {
+            steps.push(Step::Page { name: pages.first().cloned().unwrap_or_default() });
+        }
+        if ui.small_button(t("+ App")).clicked() {
+            steps.push(Step::App { id: String::new() });
+        }
+    });
 }
 
 /// Plugin actions get their own id per placement, so their settings stay apart.
