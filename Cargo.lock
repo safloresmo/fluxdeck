@@ -1171,7 +1171,7 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
 name = "fluxdeck"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "elgato-streamdeck",
  "fluxdeck-core",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "fluxdeck-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "image",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "fluxdeck-editor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "fluxdeck-core",
