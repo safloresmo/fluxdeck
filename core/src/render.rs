@@ -51,6 +51,26 @@ pub fn level(status: &str) -> Option<f32> {
     Some(v.clamp(0.0, 1.0))
 }
 
+fn mix_rgba(a: Rgba<u8>, b: Rgba<u8>, t: f32) -> Rgba<u8> {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Rgba([m(a[0], b[0]), m(a[1], b[1]), m(a[2], b[2]), 255])
+}
+
+/// A bar with round ends.
+fn round_bar(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, c: Rgba<u8>) {
+    let r = h as f32 / 2.0;
+    for py in y..y + h {
+        for px in x..x + w {
+            let dx = if (px as f32) < x as f32 + r { x as f32 + r - px as f32 - 0.5 } else if (px as f32) > (x + w) as f32 - r { px as f32 + 0.5 - ((x + w) as f32 - r) } else { 0.0 };
+            let dy = py as f32 + 0.5 - (y as f32 + r);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d <= r && px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                blend(img.get_pixel_mut(px as u32, py as u32), c, (r - d).clamp(0.0, 1.0));
+            }
+        }
+    }
+}
+
 fn luma(c: Rgba<u8>) -> f32 {
     (0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32) / 255.0
 }
@@ -248,22 +268,27 @@ impl Painter {
         let title = [dial.icon.as_str(), dial.label.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join("  ");
         let st = parse_status(status.unwrap_or(""));
         let lvl = meter.or(st.level);
+        // Name on top, the value large in the middle, a thick bar at the bottom.
         let (title_y, value_y) = match (st.text.is_empty(), lvl.is_some()) {
             (true, false) => (hf / 2.0, 0.0),
-            (true, true) => (hf * 0.38, 0.0),
-            _ => (hf * 0.28, hf * 0.56),
+            (true, true) => (hf * 0.34, 0.0),
+            _ => (hf * 0.24, hf * 0.53),
         };
-        self.text(&mut img, &title, hf * 0.2, wf / 2.0, title_y, wf * 0.86, fg);
+        let soft = mix_rgba(fg, color(&theme.key, bg), 0.25);
+        self.text(&mut img, &title, hf * 0.21, wf / 2.0, title_y, wf * 0.88, soft);
         if !st.text.is_empty() {
             let muted = st.text.eq_ignore_ascii_case("mute");
             let c = st.color.unwrap_or(if muted { accent } else { fg });
-            self.text(&mut img, st.text, hf * 0.26, wf / 2.0, value_y, wf * 0.86, c);
+            self.text(&mut img, st.text, hf * 0.36, wf / 2.0, value_y, wf * 0.88, c);
         }
         if let Some(l) = lvl {
-            let (bx, by, bw, bh) = (pad * 3, (hf * 0.78) as i32, w as i32 - pad * 6, (hf * 0.07).max(3.0) as i32);
+            let (bx, by, bw, bh) = (pad * 3, (hf * 0.79) as i32, w as i32 - pad * 6, (hf * 0.1).max(4.0) as i32);
             let hot = Rgba([229, 72, 77, 255]);
-            fill(&mut img, bx, by, bw, bh, bg);
-            fill(&mut img, bx, by, (bw as f32 * l) as i32, bh, if meter.is_some() && l > 0.92 { hot } else { accent });
+            round_bar(&mut img, bx, by, bw, bh, bg);
+            let filled = (bw as f32 * l) as i32;
+            if filled > 0 {
+                round_bar(&mut img, bx, by, filled.max(bh), bh, if meter.is_some() && l > 0.92 { hot } else { accent });
+            }
         }
         img
     }

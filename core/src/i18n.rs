@@ -326,6 +326,7 @@ const EN: &[(&str, &str)] = &[
     ("Elige un grupo", "Pick a group"),
     ("Volumen de una app", "App volume"),
     ("Sonando", "Playing"),
+    ("Ayuda", "Help"),
     ("Mostrar u ocultar la biblioteca de acciones", "Show or hide the action library"),
     ("Escucharme", "Hear myself"),
     ("No se pudo iniciar la escucha (falta pw-loopback).", "Could not start listening (pw-loopback is missing)."),

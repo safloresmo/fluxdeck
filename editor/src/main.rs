@@ -665,7 +665,7 @@ impl App {
                 let title = self.nav().into_iter().find(|(v, _, _)| *v == self.view).map(|(_, _, n)| n).unwrap_or_default();
                 ui.label(RichText::new(title).size(17.0).strong());
             }
-            if self.view == View::Deck && ui.ctx().content_rect().width() < 1250.0 {
+            if self.view == View::Deck && ui.ctx().content_rect().width() < 1100.0 {
                 let label = RichText::new(format!("\u{f0570}  {}", t("Acciones"))).size(14.0);
                 if ui.selectable_label(self.lib_open, label).on_hover_text(t("Mostrar u ocultar la biblioteca de acciones")).clicked() {
                     self.lib_open = !self.lib_open;
@@ -1330,6 +1330,8 @@ impl App {
 
     fn deck(&mut self, ui: &mut egui::Ui) {
         let accent = self.accent();
+        // Live values, for the level rings around the knobs.
+        let preview = self.preview();
         let (cols, rows, dials) = self.layout();
         let gap = 14.0;
         let margin = 28.0;
@@ -1363,20 +1365,35 @@ impl App {
                         let (rect, resp) = ui.allocate_exact_size(vec2(seg.x, 76.0), Sense::click());
                         let on = self.sel == Some(Sel::Dial(i));
                         let hover = ui.ctx().animate_bool(resp.id, resp.hovered() || on);
-                        let r = 28.0 + 2.0 * hover;
+                        let r = 26.0 + 2.0 * hover;
                         let p = ui.painter();
-                        p.circle_filled(rect.center(), r, Color32::from_rgb(28, 28, 33));
-                        p.circle_stroke(rect.center(), r, Stroke::new(1.0 + 1.5 * hover, mix(Color32::from_gray(70), accent, hover)));
-                        p.line_segment([rect.center() - vec2(0.0, r - 3.0), rect.center() - vec2(0.0, r - 13.0)], Stroke::new(2.0, Color32::from_gray(170)));
+                        let c = rect.center();
+                        p.circle_filled(c, r, Color32::from_rgb(28, 28, 33));
+                        p.circle_stroke(c, r, Stroke::new(1.0 + 1.5 * hover, mix(Color32::from_gray(60), accent, hover)));
+                        // A ring with the dial's level, like the arc around a real knob.
+                        let level = preview.get(&Sel::Dial(i)).and_then(|s| render::parse_status(s).level);
+                        let arc = |from: f32, to: f32| -> Vec<egui::Pos2> {
+                            let n = 48;
+                            (0..=n).map(|k| from + (to - from) * k as f32 / n as f32).map(|a| c + vec2(a.cos(), a.sin()) * (r + 7.0)).collect()
+                        };
+                        let (start, sweep) = (std::f32::consts::PI * 0.75, std::f32::consts::PI * 1.5);
+                        if self.cfg.pages[self.page].dial(i).is_some() {
+                            p.add(egui::Shape::line(arc(start, start + sweep), Stroke::new(3.0, Color32::from_gray(48))));
+                            if let Some(l) = level.filter(|l| *l > 0.0) {
+                                p.add(egui::Shape::line(arc(start, start + sweep * l.clamp(0.0, 1.0)), Stroke::new(3.0, accent)));
+                            }
+                        }
+                        let a = start + sweep * level.unwrap_or(0.0).clamp(0.0, 1.0);
+                        p.line_segment([c + vec2(a.cos(), a.sin()) * (r - 3.0), c + vec2(a.cos(), a.sin()) * (r - 12.0)], Stroke::new(2.5, Color32::from_gray(200)));
                         if resp.clicked() {
                             self.sel = Some(Sel::Dial(i));
                         }
                     }
                 });
             });
-            ui.add_space(14.0);
-            ui.label(RichText::new(t("Arrastra para mover · suelta en una página para copiar · desliza la tira del deck para cambiar de página")).weak().size(12.5));
-            ui.label(RichText::new(t("Clic derecho para más · Supr quita · Ctrl+C / Ctrl+V copia y pega · Ctrl+Z deshace")).weak().size(12.5));
+            ui.add_space(10.0);
+            let help = format!("{}\n{}", t("Arrastra para mover · suelta en una página para copiar · desliza la tira del deck para cambiar de página"), t("Clic derecho para más · Supr quita · Ctrl+C / Ctrl+V copia y pega · Ctrl+Z deshace"));
+            ui.label(RichText::new(format!("\u{f02d7}  {}", t("Ayuda"))).weak().size(13.0)).on_hover_text(help);
         });
         if let Some(Drag::Slot(sel)) = egui::DragAndDrop::payload::<Drag>(ui.ctx()).map(|d| *d)
             && let (Some(tex), Some(pos)) = (self.textures.get(&sel), ui.ctx().pointer_interact_pos())
@@ -1406,6 +1423,11 @@ impl App {
             self.drop_on(sel, *d);
         }
         let hover = ui.ctx().animate_bool(resp.id, resp.hovered() || hovering_drop);
+        // Empty places say they take an action.
+        if !filled && (resp.hovered() || hovering_drop) {
+            let col = ui.visuals().weak_text_color().gamma_multiply(0.6 + 0.4 * hover);
+            ui.painter().text(resp.rect.center(), egui::Align2::CENTER_CENTER, "+", egui::FontId::proportional(size.y.min(size.x) * 0.35), col);
+        }
         let stroke = if self.sel == Some(sel) || hovering_drop {
             Stroke::new(2.5, accent)
         } else {
@@ -2006,17 +2028,31 @@ impl eframe::App for App {
             self.close_guard(&ctx);
             return;
         }
-        // Narrow windows: slimmer panels, and the library behind its button so the deck keeps room.
+        // As in Elgato's app: the actions on the right, the deck in the middle and what is selected under it.
+        // Narrow windows hide the actions behind their button so the deck keeps room.
         let w = ctx.content_rect().width();
-        let wide = w >= 1250.0;
-        if wide || self.lib_open {
-            egui::Panel::left("library").resizable(false).exact_size(if w >= 1500.0 { 270.0 } else { 230.0 }).show(ui, |ui| self.library(ui));
+        if w >= 1100.0 || self.lib_open {
+            egui::Panel::right("library").resizable(false).exact_size(if w >= 1500.0 { 290.0 } else { 250.0 }).show(ui, |ui| self.library(ui));
         }
-        let inspector = if w >= 1450.0 { 380.0 } else if w >= 1100.0 { 330.0 } else { 290.0 };
-        egui::Panel::right("inspector").resizable(false).exact_size(inspector).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("deck_and_inspector").show(ui, |ui| {
+                self.deck(ui);
+                ui.add_space(14.0);
+                let width = (ui.available_width() - 48.0).clamp(320.0, 760.0);
+                let card = ui.visuals().faint_bg_color;
+                ui.horizontal(|ui| {
+                    ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        egui::Frame::new().fill(card).corner_radius(16).inner_margin(egui::Margin { left: 20, right: 20, top: 8, bottom: 18 }).show(ui, |ui| {
+                            ui.set_width(width - 40.0);
+                            self.inspector(ui);
+                        });
+                    });
+                });
+                ui.add_space(24.0);
+            });
         });
-        egui::CentralPanel::default().show(ui, |ui| self.deck(ui));
         self.close_guard(&ctx);
     }
 }
