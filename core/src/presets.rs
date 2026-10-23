@@ -123,7 +123,7 @@ pub fn group_id_of(status: &str) -> Option<String> {
 pub fn group_dial(g: Option<&crate::groups::Group>) -> Dial {
     let (id, name, icon) = g.map_or((String::new(), t("Grupo").to_string(), '\u{f075a}'.to_string()), |g| (g.id.clone(), g.name.clone(), g.icon.clone()));
     let base = format!("fluxdeck mix group '{}'", app_clean(&id));
-    Dial { label: name, icon, right: format!("{base} +$((2*FLUXDECK_STEPS))"), left: format!("{base} -$((2*FLUXDECK_STEPS))"), press: format!("{base} toggle"), status: base, ..Default::default() }
+    Dial { label: name, icon, right: format!("{base} +$((2*FLUXDECK_STEPS))"), left: format!("{base} -$((2*FLUXDECK_STEPS))"), press: format!("{base} toggle"), status: format!("{base} short"), ..Default::default() }
 }
 
 /// A key that mutes and unmutes an app group.
@@ -143,7 +143,7 @@ pub fn app_dial(app: &str) -> Dial {
         right: format!("{base} +$((2*FLUXDECK_STEPS))"),
         left: format!("{base} -$((2*FLUXDECK_STEPS))"),
         press: format!("{base} toggle"),
-        status: base,
+        status: format!("{base} short"),
         ..Default::default()
     }
 }
