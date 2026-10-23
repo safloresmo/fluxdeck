@@ -128,6 +128,8 @@ struct App {
     profile_sel: usize,
     /// The action library on narrow windows, where it hides behind a button.
     lib_open: bool,
+    /// Library groups the user folded, remembered between runs.
+    folded: std::collections::BTreeSet<String>,
     /// (class, title) of open windows, for adding apps to a profile, and when that was read.
     windows: (Vec<(String, String)>, Instant),
     active_profile: Option<String>,
@@ -217,6 +219,7 @@ impl App {
             installed_apps: None,
             profile_sel: 0,
             lib_open: false,
+            folded: std::fs::read_to_string(fluxdeck_core::paths::state().join("library-folded")).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(String::from).collect(),
             windows: (Vec::new(), Instant::now() - Duration::from_secs(10)),
             active_profile: None,
             app_search: String::new(),
@@ -1270,7 +1273,21 @@ impl App {
                     continue;
                 }
                 ui.add_space(6.0);
-                ui.label(RichText::new(g.to_uppercase()).size(11.5).weak().strong());
+                // While searching every group shows; otherwise a click folds it.
+                let folded = q.is_empty() && self.folded.contains(&g);
+                let arrow = if folded { "▸" } else { "▾" };
+                let head = ui.add(egui::Label::new(RichText::new(format!("{arrow}  {}  ({})", g.to_uppercase(), items.len())).size(11.5).weak().strong()).sense(Sense::click()));
+                if head.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && q.is_empty() {
+                    if !self.folded.remove(&g) {
+                        self.folded.insert(g.clone());
+                    }
+                    let list: Vec<&str> = self.folded.iter().map(String::as_str).collect();
+                    let _ = std::fs::create_dir_all(fluxdeck_core::paths::state());
+                    let _ = std::fs::write(fluxdeck_core::paths::state().join("library-folded"), list.join("\n"));
+                }
+                if folded {
+                    continue;
+                }
                 for i in items {
                     let p = &self.presets[i];
                     let (icon, kind) = match &p.item {
