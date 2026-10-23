@@ -96,6 +96,24 @@ fn app_clean(app: &str) -> String {
     app.chars().filter(|c| !matches!(c, '\'' | '"' | '\\' | '$' | '`')).collect()
 }
 
+/// The app id an "Abrir una app" key starts.
+pub fn launched_app(command: &str) -> Option<String> {
+    command.strip_prefix("fluxdeck launch '")?.split('\'').next().map(String::from)
+}
+
+/// A key that opens an installed app, with its name and icon.
+pub fn launch_key(app: Option<&crate::apps::App>) -> Key {
+    match app {
+        Some(a) => Key {
+            label: a.name.clone(),
+            icon: crate::apps::icon_file(&a.icon).map(|p| p.display().to_string()).unwrap_or_else(|| '\u{f08c6}'.to_string()),
+            command: format!("fluxdeck launch '{}'", app_clean(&a.id)),
+            ..Default::default()
+        },
+        None => Key { label: t("App").into(), icon: '\u{f08c6}'.to_string(), command: "fluxdeck launch ''".into(), ..Default::default() },
+    }
+}
+
 /// The group id a "Volumen de un grupo" slot controls.
 pub fn group_id_of(status: &str) -> Option<String> {
     status.strip_prefix("fluxdeck mix group '")?.split('\'').next().map(String::from)
@@ -144,6 +162,7 @@ pub fn all(env: &Env) -> Vec<Preset> {
     if let Some(t) = &env.terminal {
         add("Sistema", "Terminal", key("Terminal", '\u{e795}', t, "", 0.0));
     }
+    add("Sistema", "Abrir una app", Item::Key(launch_key(None)));
     add("Sistema", "Carpeta personal", key("Archivos", '\u{f024b}', "xdg-open ~", "", 0.0));
     add("Sistema", "Reloj", key("", '\u{f0150}', "", "date +%H:%M", 1.0));
     add("Sistema", "Uso de CPU", key("CPU", '\u{f0ee0}', "", "top -bn1 | awk '/^%Cpu/ { print int(100 - $8) \"%\" }'", 2.0));

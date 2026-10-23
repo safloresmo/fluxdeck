@@ -35,6 +35,7 @@ enum View {
     Mic,
     Devices,
     Plugins,
+    Profiles,
     Settings,
 }
 
@@ -123,6 +124,14 @@ struct App {
     /// What is being typed to add an app, per group.
     new_app: HashMap<String, String>,
     logo: Option<TextureHandle>,
+    installed_apps: Option<Vec<fluxdeck_core::apps::App>>,
+    profile_sel: usize,
+    /// The action library on narrow windows, where it hides behind a button.
+    lib_open: bool,
+    /// (class, title) of open windows, for adding apps to a profile, and when that was read.
+    windows: (Vec<(String, String)>, Instant),
+    active_profile: Option<String>,
+    app_search: String,
 }
 
 /// What the right-click menu of a slot asked for.
@@ -168,6 +177,7 @@ impl App {
             view: match std::env::args().nth(1).as_deref() {
                 Some("--deck") => View::Deck,
                 Some("--settings") => View::Settings,
+                Some("--profiles") => View::Profiles,
                 Some("--mic" | "--audio" | "--groups") => View::Mic,
                 Some("--devices") => View::Devices,
                 Some("--plugins") => View::Plugins,
@@ -204,6 +214,12 @@ impl App {
             apps_now: (Vec::new(), Instant::now() - Duration::from_secs(10)),
             new_app: HashMap::new(),
             logo: None,
+            installed_apps: None,
+            profile_sel: 0,
+            lib_open: false,
+            windows: (Vec::new(), Instant::now() - Duration::from_secs(10)),
+            active_profile: None,
+            app_search: String::new(),
         }
         .with_history()
     }
@@ -335,7 +351,7 @@ impl App {
         } else if hit(M::COMMAND, K::Z) {
             self.undo();
         }
-        let views = [(K::Num1, View::Home), (K::Num2, View::Deck), (K::Num3, View::Mic), (K::Num4, View::Devices), (K::Num5, View::Plugins), (K::Num6, View::Settings), (K::Comma, View::Settings)];
+        let views = [(K::Num1, View::Home), (K::Num2, View::Deck), (K::Num3, View::Mic), (K::Num4, View::Devices), (K::Num5, View::Profiles), (K::Num6, View::Plugins), (K::Num7, View::Settings), (K::Comma, View::Settings)];
         for (k, v) in views {
             if hit(M::COMMAND, k) && self.view_available(v) {
                 self.view = v;
@@ -374,6 +390,7 @@ impl App {
             (View::Deck, "\u{f0570}", t("Deck")),
             (View::Mic, "\u{f147d}", t("Audio")),
             (View::Devices, "\u{f030c}", t("Periféricos")),
+            (View::Profiles, "\u{f0328}", t("Perfiles")),
             (View::Plugins, "\u{f0431}", t("Plugins")),
             (View::Settings, "\u{f0493}", t("Ajustes")),
         ]
@@ -438,7 +455,7 @@ impl App {
 
     fn view_available(&self, v: View) -> bool {
         match v {
-            View::Home | View::Deck | View::Plugins | View::Settings => true,
+            View::Home | View::Deck | View::Plugins | View::Profiles | View::Settings => true,
             View::Mic => true,
             View::Devices => self.cfg.module("corsair"),
         }
@@ -641,9 +658,16 @@ impl App {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.add_space(6.0);
-            if !matches!(self.view, View::Deck | View::Home | View::Settings) {
+            if !matches!(self.view, View::Deck | View::Home | View::Settings | View::Profiles) {
                 let title = self.nav().into_iter().find(|(v, _, _)| *v == self.view).map(|(_, _, n)| n).unwrap_or_default();
                 ui.label(RichText::new(title).size(17.0).strong());
+            }
+            if self.view == View::Deck && ui.ctx().content_rect().width() < 1250.0 {
+                let label = RichText::new(format!("\u{f0570}  {}", t("Acciones"))).size(14.0);
+                if ui.selectable_label(self.lib_open, label).on_hover_text(t("Mostrar u ocultar la biblioteca de acciones")).clicked() {
+                    self.lib_open = !self.lib_open;
+                }
+                ui.separator();
             }
             for i in 0..self.cfg.pages.len() {
                 if self.view != View::Deck {
@@ -801,6 +825,202 @@ impl App {
         self.sel = Some(target);
     }
 
+    /// Perfiles: a list on the left, the chosen profile on the right.
+    fn profiles_page(&mut self, ui: &mut egui::Ui) {
+        let card = ui.visuals().faint_bg_color;
+        let accent = self.accent();
+        if self.windows.1.elapsed() > Duration::from_secs(3) {
+            self.windows = (open_windows(), Instant::now());
+            self.active_profile = fluxdeck_core::profiles::active();
+        }
+        ui.add_space(22.0);
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(t("Perfiles")).size(26.0).strong());
+                ui.label(RichText::new(t("Cambian solos cuando usas ciertas apps: la página del deck, el volumen de tus grupos o un comando. Al salir, todo vuelve como estaba.")).weak().size(13.0));
+            });
+        });
+        ui.add_space(14.0);
+        ui.horizontal_top(|ui| {
+            ui.add_space(24.0);
+            // The list.
+            ui.vertical(|ui| {
+                ui.set_width(250.0);
+                for i in 0..self.cfg.profiles.len() {
+                    let p = &self.cfg.profiles[i];
+                    let on = self.profile_sel == i;
+                    let live = self.active_profile.as_deref() == Some(p.name.as_str());
+                    let fill = if on { mix(ui.visuals().panel_fill, accent, 0.22) } else { card };
+                    let r = egui::Frame::new().fill(fill).corner_radius(12).inner_margin(12).show(ui, |ui| {
+                        ui.set_width(226.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&p.icon).size(20.0).color(accent));
+                            ui.vertical(|ui| {
+                                ui.add(egui::Label::new(RichText::new(&p.name).strong()).truncate());
+                                let sub = if live { t("Activo ahora").to_string() } else { tf("{} apps", &[&p.apps.len().to_string()]) };
+                                ui.label(RichText::new(sub).size(12.0).color(if live { accent } else { ui.visuals().weak_text_color() }));
+                            });
+                        });
+                    });
+                    if r.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.profile_sel = i;
+                    }
+                    ui.add_space(6.0);
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(t("+ Nuevo perfil")).clicked() {
+                        let ids: Vec<fluxdeck_core::groups::Group> = self.cfg.profiles.iter().map(|p| fluxdeck_core::groups::Group { id: p.id.clone(), ..Default::default() }).collect();
+                        let id = fluxdeck_core::groups::new_id(&ids, "perfil");
+                        self.cfg.profiles.push(fluxdeck_core::profiles::Profile { id, name: t("Nuevo perfil").into(), ..Default::default() });
+                        self.profile_sel = self.cfg.profiles.len() - 1;
+                    }
+                    if !self.cfg.profiles.iter().any(|p| p.id == "juegos") && ui.button(t("Perfil de juegos")).on_hover_text(t("Con Steam y otros juegos: Chat al 100 %, Música al 40 %")).clicked() {
+                        self.cfg.profiles.push(fluxdeck_core::profiles::starter());
+                        self.profile_sel = self.cfg.profiles.len() - 1;
+                    }
+                });
+            });
+            ui.add_space(16.0);
+            // The chosen profile.
+            if self.cfg.profiles.is_empty() {
+                ui.label(RichText::new(t("Todavía no tienes perfiles.")).weak());
+                return;
+            }
+            self.profile_sel = self.profile_sel.min(self.cfg.profiles.len() - 1);
+            let i = self.profile_sel;
+            egui::ScrollArea::vertical().id_salt("profile").show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_max_width(620.0);
+                    let mut remove = false;
+                    egui::Frame::new().fill(card).corner_radius(14).inner_margin(18).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            let p = &mut self.cfg.profiles[i];
+                            egui::ComboBox::from_id_salt("picon").selected_text(RichText::new(&p.icon).size(18.0).color(accent)).width(44.0).show_ui(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for icon in GROUP_ICONS.iter().chain(&["\u{f0169}", "\u{f03d8}", "\u{f00d6}"]) {
+                                        if ui.selectable_label(p.icon == *icon, RichText::new(*icon).size(20.0)).clicked() {
+                                            p.icon = icon.to_string();
+                                        }
+                                    }
+                                });
+                            });
+                            ui.add(TextEdit::singleline(&mut p.name).desired_width(240.0).font(egui::TextStyle::Heading));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(t("Quitar perfil")).clicked() {
+                                    remove = true;
+                                }
+                            });
+                        });
+                    });
+                    if remove {
+                        self.cfg.profiles.remove(i);
+                        return;
+                    }
+                    ui.add_space(10.0);
+                    self.profile_apps(ui, card, i);
+                    ui.add_space(10.0);
+                    self.profile_actions(ui, card, i);
+                });
+            });
+        });
+    }
+
+    /// Which windows turn the profile on.
+    fn profile_apps(&mut self, ui: &mut egui::Ui, card: Color32, i: usize) {
+        egui::Frame::new().fill(card).corner_radius(14).inner_margin(18).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(t("Se activa con")).size(15.0).strong());
+            ui.label(RichText::new(t("El nombre de la ventana o parte de él: «steam_app» sirve para cualquier juego de Steam.")).weak().size(12.5));
+            ui.add_space(6.0);
+            let mut drop = None;
+            ui.horizontal_wrapped(|ui| {
+                for (pos, app) in self.cfg.profiles[i].apps.iter().enumerate() {
+                    if ui.button(format!("{app}  ✕")).clicked() {
+                        drop = Some(pos);
+                    }
+                }
+                if self.cfg.profiles[i].apps.is_empty() {
+                    ui.label(RichText::new(t("Sin apps todavía.")).weak());
+                }
+            });
+            if let Some(pos) = drop {
+                self.cfg.profiles[i].apps.remove(pos);
+            }
+            let mut add = None;
+            ui.horizontal(|ui| {
+                let key = format!("profile:{}", self.cfg.profiles[i].id);
+                let text = self.new_app.entry(key).or_default();
+                let r = ui.add(TextEdit::singleline(text).hint_text(t("Nombre de la ventana")).desired_width(180.0));
+                let entered = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button(t("Agregar")).clicked() || entered) && !text.trim().is_empty() {
+                    add = Some(std::mem::take(text).trim().to_string());
+                }
+                egui::ComboBox::from_id_salt("pwin").selected_text(t("Ventanas abiertas")).show_ui(ui, |ui| {
+                    for (class, title) in &self.windows.0 {
+                        if ui.selectable_label(false, class).on_hover_text(title).clicked() {
+                            add = Some(class.clone());
+                        }
+                    }
+                });
+            });
+            if let Some(app) = add
+                && !self.cfg.profiles[i].apps.contains(&app)
+            {
+                self.cfg.profiles[i].apps.push(app);
+            }
+        });
+    }
+
+    /// What the profile changes.
+    fn profile_actions(&mut self, ui: &mut egui::Ui, card: Color32, i: usize) {
+        let pages: Vec<String> = self.cfg.pages.iter().map(|p| p.name.clone()).collect();
+        let groups = self.cfg.groups.clone();
+        egui::Frame::new().fill(card).corner_radius(14).inner_margin(18).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(t("Al activarse")).size(15.0).strong());
+            ui.add_space(6.0);
+            let p = &mut self.cfg.profiles[i];
+            ui.horizontal(|ui| {
+                ui.label(t("Página del deck"));
+                egui::ComboBox::from_id_salt("ppage").selected_text(if p.page.is_empty() { t("Sin cambiar").to_string() } else { p.page.clone() }).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut p.page, String::new(), t("Sin cambiar"));
+                    for name in &pages {
+                        ui.selectable_value(&mut p.page, name.clone(), name);
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            ui.label(t("Volumen de grupos"));
+            if groups.is_empty() {
+                ui.label(RichText::new(t("Todavía no hay grupos. Créalos en Audio → Grupos.")).weak().size(12.5));
+            }
+            for g in &groups {
+                ui.horizontal(|ui| {
+                    let mut on = p.levels.contains_key(&g.id);
+                    if ui.checkbox(&mut on, format!("{}  {}", g.icon, g.name)).changed() {
+                        if on {
+                            p.levels.insert(g.id.clone(), Default::default());
+                        } else {
+                            p.levels.remove(&g.id);
+                        }
+                    }
+                    if let Some(level) = p.levels.get_mut(&g.id) {
+                        ui.add(egui::Slider::new(&mut level.volume, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                        ui.checkbox(&mut level.muted, t("Silenciado"));
+                    }
+                });
+            }
+            ui.add_space(8.0);
+            code(ui, t("Comando al activarse"), &mut p.command, "obs --startreplaybuffer");
+            ui.add_space(6.0);
+            ui.checkbox(&mut p.restore, t("Al salir de la app, volver a la página y volúmenes de antes"));
+            ui.add_space(6.0);
+            ui.label(RichText::new(t("Guarda para aplicar los cambios.")).weak().size(12.5));
+        });
+    }
+
     /// Audio → Grupos: make groups and say which apps go in each.
     fn groups_tab(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
         if self.apps_now.1.elapsed() > Duration::from_secs(3) {
@@ -909,6 +1129,25 @@ impl App {
                 });
             });
         });
+    }
+
+    /// Which installed app an "Abrir una app" key opens: a searchable list.
+    fn launch_picker(&mut self, ui: &mut egui::Ui, current: &str) -> Option<fluxdeck_core::apps::App> {
+        let apps = self.installed_apps.get_or_insert_with(fluxdeck_core::apps::installed).clone();
+        section(ui, t("App"));
+        let shown = apps.iter().find(|a| a.id == current).map_or(t("Elige una app").to_string(), |a| a.name.clone());
+        ui.label(RichText::new(shown).strong());
+        ui.add(TextEdit::singleline(&mut self.app_search).hint_text(t("Buscar apps…")).desired_width(f32::INFINITY));
+        let q = self.app_search.trim().to_lowercase();
+        let mut out = None;
+        egui::ScrollArea::vertical().id_salt("launch_list").max_height(220.0).show(ui, |ui| {
+            for a in apps.iter().filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q) || a.id.to_lowercase().contains(&q)) {
+                if ui.selectable_label(a.id == current, &a.name).on_hover_text(&a.id).clicked() {
+                    out = Some(a.clone());
+                }
+            }
+        });
+        out
     }
 
     /// Which group a "Volumen de un grupo" slot controls.
@@ -1077,7 +1316,7 @@ impl App {
         let (cols, rows, dials) = self.layout();
         let gap = 14.0;
         let margin = 28.0;
-        let k = ((ui.available_width() - 2.0 * margin - 40.0 - (cols as f32 - 1.0) * gap) / cols as f32).clamp(64.0, 132.0);
+        let k = ((ui.available_width() - 2.0 * margin - 40.0 - (cols as f32 - 1.0) * gap) / cols as f32).clamp(44.0, 132.0);
         let width = cols as f32 * k + (cols as f32 - 1.0) * gap;
         let seg = vec2(width / dials.max(1) as f32, width / dials.max(1) as f32 / 2.0);
         ui.vertical_centered(|ui| {
@@ -1473,6 +1712,14 @@ impl App {
             }
             return;
         }
+        if let Some(id) = presets::launched_app(&page.keys[idx].command)
+            && let Some(app) = self.launch_picker(ui, &id)
+        {
+            let fresh = presets::launch_key(Some(&app));
+            let k = &mut self.cfg.pages[self.page].keys[idx];
+            (k.label, k.icon, k.command) = (fresh.label, fresh.icon, fresh.command);
+        }
+        let page = &mut self.cfg.pages[self.page];
         if let Some(app) = presets::app_of(&page.keys[idx].status)
             && let Some(new) = self.app_picker(ui, &app)
         {
@@ -1686,6 +1933,11 @@ impl eframe::App for App {
             self.close_guard(&ctx);
             return;
         }
+        if self.view == View::Profiles {
+            egui::CentralPanel::default().show(ui, |ui| self.profiles_page(ui));
+            self.close_guard(&ctx);
+            return;
+        }
         if self.view == View::Settings {
             egui::CentralPanel::default().show(ui, |ui| self.settings_page(ui));
             self.close_guard(&ctx);
@@ -1737,8 +1989,14 @@ impl eframe::App for App {
             self.close_guard(&ctx);
             return;
         }
-        egui::Panel::left("library").resizable(false).exact_size(270.0).show(ui, |ui| self.library(ui));
-        egui::Panel::right("inspector").resizable(false).exact_size(380.0).show(ui, |ui| {
+        // Narrow windows: slimmer panels, and the library behind its button so the deck keeps room.
+        let w = ctx.content_rect().width();
+        let wide = w >= 1250.0;
+        if wide || self.lib_open {
+            egui::Panel::left("library").resizable(false).exact_size(if w >= 1500.0 { 270.0 } else { 230.0 }).show(ui, |ui| self.library(ui));
+        }
+        let inspector = if w >= 1450.0 { 380.0 } else if w >= 1100.0 { 330.0 } else { 290.0 };
+        egui::Panel::right("inspector").resizable(false).exact_size(inspector).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
         });
         egui::CentralPanel::default().show(ui, |ui| self.deck(ui));
@@ -1797,6 +2055,21 @@ fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> bool {
     let x = rect.left() + 12.0 + t * (rect.width() - 24.0);
     ui.painter().circle_filled(egui::pos2(x, rect.center().y), 9.0, if *on { v.selection.stroke.color } else { v.text_color() });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// Open windows on Hyprland, one per class.
+fn open_windows() -> Vec<(String, String)> {
+    let Ok(out) = Command::new("hyprctl").args(["clients", "-j"]).output() else { return Vec::new() };
+    let all: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for c in all {
+        let class = c["class"].as_str().unwrap_or_default().to_string();
+        if !class.is_empty() && !seen.iter().any(|(k, _)| *k == class) {
+            seen.push((class, c["title"].as_str().unwrap_or_default().to_string()));
+        }
+    }
+    seen.sort();
+    seen
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {

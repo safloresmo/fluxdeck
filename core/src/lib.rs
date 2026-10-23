@@ -1,3 +1,4 @@
+pub mod apps;
 pub mod catalogue;
 pub mod config;
 pub mod effects;
@@ -8,6 +9,7 @@ pub mod plugins;
 pub mod corsair;
 pub mod i18n;
 pub mod presets;
+pub mod profiles;
 pub mod pw;
 pub mod render;
 pub mod state;

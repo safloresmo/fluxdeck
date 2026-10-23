@@ -154,31 +154,32 @@ impl Home {
                 ui.add_space(14.0);
             }
 
-            // Three summary cards.
+            // Three summary cards, in as many columns as fit.
             pad(ui, |ui| {
-                let w = ((ui.available_width() - 2.0 * 14.0) / 3.0).max(220.0);
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 14.0;
-                    let deck_text = match deck {
-                        Some(l) => (tf("{} · página «{}»", &[&crate::model_name(&l.model), &l.page]), t("Conectado").to_string()),
-                        None => (t("Sin conectar").to_string(), String::new()),
-                    };
-                    if summary(ui, card, w, "\u{f0570}", t("Deck"), &deck_text.0, &deck_text.1, accent) {
-                        go = Some(Go::Deck);
-                    }
-                    let mic = s.mic.clone().unwrap_or_else(|| t("Ninguno").into());
-                    let detail = if s.effects > 0 { format!("{} · {}", t(s.mic_mode), tf("{} efectos", &[&s.effects.to_string()])) } else { t(s.mic_mode).to_string() };
-                    if summary(ui, card, w, "\u{f036c}", t("Micrófono"), &mic, &detail, accent) {
-                        go = Some(Go::Audio);
-                    }
-                    let plug = tf("{} instalados", &[&s.plugins.to_string()]);
-                    let off = if s.plugins_off > 0 { tf("{} desactivados", &[&s.plugins_off.to_string()]) } else { String::new() };
-                    if summary(ui, card, w, "\u{f0431}", t("Plugins"), &plug, &off, accent) {
-                        go = Some(Go::Plugins);
-                    }
-                });
+                let avail = ui.available_width();
+                let cols = if avail >= 760.0 { 3 } else if avail >= 500.0 { 2 } else { 1 };
+                let w = (avail - (cols as f32 - 1.0) * 14.0) / cols as f32;
+                let deck_text = match deck {
+                    Some(l) => (tf("{} · página «{}»", &[&crate::model_name(&l.model), &l.page]), t("Conectado").to_string()),
+                    None => (t("Sin conectar").to_string(), String::new()),
+                };
+                let mic = s.mic.clone().unwrap_or_else(|| t("Ninguno").into());
+                let detail = if s.effects > 0 { format!("{} · {}", t(s.mic_mode), tf("{} efectos", &[&s.effects.to_string()])) } else { t(s.mic_mode).to_string() };
+                let plug = tf("{} instalados", &[&s.plugins.to_string()]);
+                let off = if s.plugins_off > 0 { tf("{} desactivados", &[&s.plugins_off.to_string()]) } else { String::new() };
+                let cards = [("\u{f0570}", t("Deck"), deck_text.0.clone(), deck_text.1.clone(), Go::Deck), ("\u{f036c}", t("Micrófono"), mic, detail, Go::Audio), ("\u{f0431}", t("Plugins"), plug, off, Go::Plugins)];
+                for row in cards.chunks(cols) {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        for (icon, title, main, detail, target) in row {
+                            if summary(ui, card, w, icon, title, main, detail, accent) {
+                                go = Some(*target);
+                            }
+                        }
+                    });
+                    ui.add_space(14.0);
+                }
             });
-            ui.add_space(14.0);
 
             // Connected devices.
             pad(ui, |ui| {

@@ -5,6 +5,7 @@ mod groupsrun;
 mod mixcmd;
 mod plugincmd;
 mod plugins;
+mod profilesrun;
 mod pwcmd;
 mod xlr;
 
@@ -50,6 +51,8 @@ pub(crate) enum Msg {
     Plugins,
     /// An action's settings page opened (true) or closed (false).
     Inspector(String, bool),
+    /// A profile wants this page shown, or (None) the page from before it.
+    ProfilePage(Option<String>),
     Status { generation: u64, slot: Slot, text: String },
     Meter { generation: u64, slot: Slot, level: f32 },
 }
@@ -66,6 +69,10 @@ fn main() {
         Some("plugin") => Some(plugincmd::command(&args[1..])),
         Some("effects") => Some(effectscmd::command(&args[1..])),
         Some("mix") => Some(mixcmd::command(&args[1..])),
+        Some("launch") => Some(match args.get(1).and_then(|id| fluxdeck_core::apps::find(id)) {
+            Some(app) => fluxdeck_core::apps::launch(&app).map_err(|e| e.to_string()),
+            None => Err("usage: fluxdeck launch APP_ID (a .desktop file name)".into()),
+        }),
         Some(other) => Some(Err(format!("unknown command {other}; run without arguments to start the daemon"))),
         None => None,
     };
@@ -84,6 +91,7 @@ fn daemon() {
     let _watcher = watch(tx.clone());
     effectsrun::start();
     groupsrun::start();
+    profilesrun::start(tx.clone());
     let host = Host::start(tx.clone());
     if host.is_none() {
         eprintln!("fluxdeck: no free port for plugins; they are off");
@@ -161,7 +169,7 @@ fn first_line(out: &[u8]) -> String {
 }
 
 /// Runs `cmd` with `sh`, with this binary's folder first in PATH so commands can call `fluxdeck …`.
-fn shell(cmd: &str, steps: u32) -> Command {
+pub(crate) fn shell(cmd: &str, steps: u32) -> Command {
     let mut c = Command::new("sh");
     c.arg("-c").arg(cmd).env("FLUXDECK_STEPS", steps.to_string()).stdin(Stdio::null());
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
@@ -201,6 +209,8 @@ struct Session {
     images: HashMap<String, Option<RgbaImage>>,
     /// Off-screen actions shown to their plugin while their settings page is open.
     ghosts: HashSet<String>,
+    /// (page before a profile, page the profile showed).
+    return_to: Option<(usize, usize)>,
 }
 
 /// A plugin-drawn slot.
@@ -248,6 +258,7 @@ impl Session {
             looks: HashMap::new(),
             images: HashMap::new(),
             ghosts: HashSet::new(),
+            return_to: None,
             kind,
             deck: Arc::new(deck),
             tx,
@@ -305,6 +316,23 @@ impl Session {
                         self.appear(true, Some(&uuid));
                     }
                     Msg::Inspector(instance, open) => self.inspector(&instance, open),
+                    Msg::ProfilePage(Some(name)) => {
+                        if let Some(i) = self.cfg.page_index(&name) {
+                            // Remember where the deck was, once, so leaving the profile goes back there.
+                            if self.return_to.is_none() {
+                                self.return_to = Some((self.page, i));
+                            }
+                            self.open_page(i);
+                        }
+                    }
+                    Msg::ProfilePage(None) => {
+                        // Only if the user has not moved to another page in the meantime.
+                        if let Some((back, shown)) = self.return_to.take()
+                            && self.page == shown
+                        {
+                            self.open_page(back);
+                        }
+                    }
                     Msg::Plugins => {
                         if let Some(h) = &self.host {
                             h.launch();

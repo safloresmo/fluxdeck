@@ -18,7 +18,10 @@ pub struct Config {
     /// Editor size: 0.9 compact, 1.0 normal, 1.15 comfortable.
     #[serde(skip_serializing_if = "is_one")]
     pub ui_scale: f32,
-    /// App groups (Wave Link-style channels), each a virtual output.
+    /// Profiles that switch on with the focused app.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<crate::profiles::Profile>,
+    /// App groups (Wave Link-style channels): a volume and mute for several apps at once.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<crate::groups::Group>,
     /// Audio devices left out of the mixer's menus, by node name.
@@ -131,6 +134,7 @@ impl Default for Config {
             disabled_plugins: Vec::new(),
             hidden_devices: Vec::new(),
             groups: Vec::new(),
+            profiles: Vec::new(),
             modules: Vec::new(),
             pages: vec![Page { name: "inicio".into(), keys: vec![], dials: vec![] }],
         }

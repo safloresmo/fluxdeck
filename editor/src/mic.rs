@@ -75,6 +75,8 @@ pub struct Mic {
     effects: Option<EffectsEditor>,
     /// Any microphone at all, so the view is offered even without a Dock or a filter.
     any_mic: bool,
+    /// The loopback that lets you hear yourself.
+    monitor: Option<Child>,
     pub notice: String,
 }
 
@@ -154,6 +156,7 @@ impl Mic {
             shown_levels: [0.0; 2],
             effects: EffectsEditor::load(),
             any_mic: !effects::microphones().is_empty(),
+            monitor: None,
             notice: String::new(),
         }
     }
@@ -213,7 +216,43 @@ impl Mic {
                 let _ = c.kill();
                 let _ = c.wait();
             }
+            // Hearing yourself only while this view is open, so it is never left on by mistake.
+            self.listen(false);
         }
+    }
+
+    /// Plays the processed microphone into the default output, to hear changes as they are made.
+    fn listen(&mut self, on: bool) {
+        if let Some(mut c) = self.monitor.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        if !on {
+            return;
+        }
+        let Some(src) = self.processed().or_else(|| self.dock.clone()) else { return };
+        let name = format!("{}-escucha", fluxdeck_core::paths::NAME);
+        self.monitor = Command::new("pw-loopback")
+            .args(["-n", &name, "-C", &src, "-l", "10"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok();
+        if self.monitor.is_none() {
+            self.notice = t("No se pudo iniciar la escucha (falta pw-loopback).").into();
+        }
+    }
+
+    fn listen_button(&mut self, ui: &mut egui::Ui) {
+        let on = self.monitor.is_some();
+        ui.horizontal(|ui| {
+            if toggle(ui, on, &format!("\u{f02cb}  {}", t("Escucharme")), Color32::from_rgb(46, 125, 50)) {
+                self.listen(!on);
+            }
+            ui.label(RichText::new(t("Con audífonos: en bocinas se acopla. Se apaga al salir de esta vista.")).weak().size(12.0));
+        });
+        ui.add_space(6.0);
     }
 
     fn send(&mut self, w: Write) {
@@ -360,6 +399,7 @@ impl Mic {
         self.source_picker(ui, accent);
         ui.label(t("Voz procesada"));
         level_bar(ui, self.shown_levels[1], accent);
+        self.listen_button(ui);
         ui.add_space(8.0);
         let Some(fx) = self.effects.as_mut() else { return };
         let live = fx.ui(ui, accent);
@@ -394,6 +434,7 @@ impl Mic {
         }
         ui.label(t("Voz procesada"));
         level_bar(ui, self.shown_levels[1], accent);
+        self.listen_button(ui);
 
         let mut group = String::new();
         let mut changes = Vec::new();
@@ -533,5 +574,11 @@ mod tests {
         assert!(describe("graves", "Gain").is_some());
         let text = conf_text(&[("graves:Gain".into(), 4.5), ("graves:b0".into(), 1.0), ("compresor:Ratio (1:n)".into(), 3.0)]);
         assert_eq!(text, "# graves\n\"Gain\" = 4.5\n\n# compresor\n\"Ratio (1:n)\" = 3\n");
+    }
+}
+
+impl Drop for Mic {
+    fn drop(&mut self) {
+        self.listen(false);
     }
 }
