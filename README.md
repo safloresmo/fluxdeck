@@ -31,8 +31,10 @@ servicio; el editor por ahora dibuja la distribución del +.
 - Plugins de Elgato y OpenDeck, con tienda integrada.
 
 **Audio**
-- Mezclador: salida y micrófono en uso, y cada app que suena o graba, con su volumen, silencio,
-  medidor y salida propia.
+- Mezclador en cuadrícula, como Wave Link: una fila por canal (micrófono, grupos y apps) y una
+  columna por salida; un clic en el cruce manda el canal a esa salida.
+- Mezcla para stream opcional: una salida «FluxDeck Stream» para OBS, con volumen propio para el
+  micrófono y cada grupo. Solo existe mientras está encendida.
 - Grupos de apps (Juegos, Música, Navegador, Chat…): cada grupo tiene su volumen y las apps
   nuevas entran solas. Sin aparatos virtuales: no ensucia los ajustes de sonido del sistema.
 - Perillas del deck para el volumen de una app o de un grupo.
@@ -43,6 +45,8 @@ servicio; el editor por ahora dibuja la distribución del +.
 - Módulo Corsair (a través de OpenLinkHub): batería, cancelación de ruido y luces.
 - Inicio con el estado de todo y avisos; tema del escritorio, oscuro, claro o propio; español
   e inglés.
+- Ícono en la bandeja; al arrancar con la sesión no abre ninguna ventana.
+- En Ryoku, un widget para la barra que se instala desde los ajustes.
 
 ## Instalación
 
@@ -56,6 +60,16 @@ dist/install.sh --udev   # además, la regla udev (pide tu contraseña)
 La regla udev hace falta si tu usuario no puede abrir el deck (el servicio lo dice en
 `journalctl --user -u fluxdeck`) y para 48 V y Baja Z del XLR Dock. Si el servicio no está
 corriendo, el editor lo avisa y lo puede iniciar.
+
+Cómo arranca se elige en *Ajustes → General → Arranque*:
+
+- **Servicio del sistema**: el servicio de usuario de systemd (lo que deja la primera instalación).
+- **Lo arranca mi escritorio**: escribe `~/.config/autostart/fluxdeck.desktop`, que siguen GNOME,
+  KDE, XFCE y la mayoría. En Ryoku se agrega en *Ryoku Hub → Sesión → Al iniciar*.
+- **No arrancar solo**.
+
+En los tres casos arranca minimizado: solo el ícono de la bandeja. Las actualizaciones con
+`dist/install.sh` respetan lo que elegiste.
 
 Atajos del editor: Ctrl+S guarda, Ctrl+Z / Ctrl+Shift+Z deshace y rehace, Ctrl+C / Ctrl+V / Ctrl+D
 copian, pegan y duplican la tecla seleccionada, Supr la quita, Esc suelta la selección, Ctrl+1…6
@@ -72,7 +86,34 @@ también a las que se abran después. Los niveles se guardan en `~/.local/state/
 fluxdeck mix group musica +10     # sube el grupo Música
 fluxdeck mix group chat toggle    # silencia o devuelve el sonido
 fluxdeck mix app spotify =40      # una app suelta
+fluxdeck mix mic toggle           # el micrófono en uso
+fluxdeck mix status               # todo en una línea JSON (lo usa el widget de Ryoku)
 ```
+
+En la cuadrícula del mezclador, el punto de cada grupo marca su salida. El grupo la recuerda
+(`~/.local/state/fluxdeck/group-outputs.json`) y manda ahí también las apps que se abran después.
+
+## Mezcla para stream
+
+El botón *Mezcla para stream* (en *Audio → Mezclador*) crea la salida «FluxDeck Stream» y una
+columna Stream en la cuadrícula. El micrófono y cada grupo tienen ahí su envío, con volumen
+propio; todos empiezan apagados y se encienden con su botón o moviendo su barra. En OBS se agrega
+una captura de audio de salida con «FluxDeck Stream».
+
+La salida la mantiene el servicio: desaparece al apagar la mezcla o al cerrarse FluxDeck, sin
+dejar nada en el sistema. El volumen del canal también cuenta para el stream (silenciar un grupo
+lo silencia en los dos), y una app tiene que estar en un grupo para llegar al stream.
+
+```sh
+fluxdeck mix stream on            # on / off / toggle
+```
+
+## Ryoku
+
+En un escritorio Ryoku, *Ajustes → Extensiones → Integraciones* instala el widget de FluxDeck
+para la barra (el micrófono, los grupos, el perfil y la mezcla para stream), lo muestra u oculta,
+lo actualiza cuando FluxDeck trae una versión nueva y lo quita. Su código está en
+`ryoku-widget/`; FluxDeck solo usa los comandos de Ryoku (`ryoku plugin`, `ryoku-shell bar`).
 
 ## Elgato XLR Dock
 
@@ -85,7 +126,8 @@ fluxdeck xlr phantom toggle
 fluxdeck xlr lowz on
 ```
 
-Necesita la regla udev de `dist/`. El formato del bloque viene del trabajo de
+Necesita la regla udev de `dist/`. En el editor, encender los 48 V pide un segundo clic: solo
+los micrófonos de condensador los necesitan. El formato del bloque viene del trabajo de
 [OpenWave](https://github.com/rikkichy/openwave) y [OpenXLR](https://github.com/Michael-Brooks/openxlr);
 no los uses al mismo tiempo que FluxDeck.
 
