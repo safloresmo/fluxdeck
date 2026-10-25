@@ -181,10 +181,29 @@ impl Painter {
         Some(imageops::resize(img, size, size, imageops::FilterType::Lanczos3))
     }
 
+    /// An SVG drawn in `currentColor` (the icon store's single-colour icons) painted in `c`; other
+    /// images as they are.
+    fn tinted(&self, path: &str, c: Rgba<u8>, size: u32) -> Option<RgbaImage> {
+        if !path.ends_with(".svg") {
+            return self.image(path, size);
+        }
+        let key = format!("{path}#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+        let mut cache = self.images.borrow_mut();
+        let img = cache
+            .entry(key)
+            .or_insert_with(|| {
+                let text = std::fs::read_to_string(crate::config::expand(path)).ok()?;
+                let text = text.replace("currentColor", &format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]));
+                crate::plugins::data_url(&text, 288)
+            })
+            .as_ref()?;
+        Some(imageops::resize(img, size, size, imageops::FilterType::Lanczos3))
+    }
+
     /// Paints an icon: a path to an image, or glyph text.
     fn icon(&self, img: &mut RgbaImage, icon: &str, size: f32, cx: f32, cy: f32, c: Rgba<u8>) {
         if icon.contains('/') {
-            if let Some(pic) = self.image(icon, size as u32) {
+            if let Some(pic) = self.tinted(icon, c, size as u32) {
                 let (x, y) = ((cx - size / 2.0) as i64, (cy - size / 2.0) as i64);
                 imageops::overlay(img, &pic, x, y);
             }

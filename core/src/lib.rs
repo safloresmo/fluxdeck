@@ -8,6 +8,7 @@ pub mod paths;
 pub mod plugins;
 pub mod corsair;
 pub mod i18n;
+pub mod iconify;
 pub mod presets;
 pub mod profiles;
 pub mod pw;

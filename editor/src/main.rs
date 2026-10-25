@@ -1,6 +1,7 @@
 mod devices;
 mod effects;
 mod home;
+mod icons;
 mod mic;
 mod mixer;
 mod store;
@@ -120,6 +121,9 @@ struct App {
     audio_tab: usize,
     settings_tab: usize,
     startup: fluxdeck_core::paths::Startup,
+    /// The icon store window and the key or dial it picks an icon for.
+    icon_store: icons::IconStore,
+    icon_target: Option<Sel>,
     /// Installed font families, read when the font menu is first shown, and its search text.
     font_families: Option<Vec<String>>,
     font_query: String,
@@ -222,6 +226,8 @@ impl App {
             // `--settings 2` opens a given tab.
             settings_tab: std::env::args().nth(2).and_then(|a| a.parse().ok()).unwrap_or(0),
             startup: fluxdeck_core::paths::startup(),
+            icon_store: icons::IconStore::new(),
+            icon_target: None,
             font_families: None,
             font_query: String::new(),
             ryoku_widget: None,
@@ -1999,7 +2005,9 @@ impl App {
         section(ui, t("Aspecto"));
         ui.label(t("Texto"));
         ui.add(TextEdit::multiline(&mut key.label).desired_rows(2).desired_width(f32::INFINITY).hint_text(t("Hasta tres líneas")));
-        icon_field(ui, &mut key.icon, &self.glyphs, &mut self.icon_query);
+        if icon_field(ui, &mut key.icon, &self.glyphs, &mut self.icon_query) {
+            (self.icon_target, self.icon_store.open) = (Some(Sel::Key(i)), true);
+        }
         let mut own = !key.color.is_empty();
         ui.horizontal(|ui| {
             if ui.checkbox(&mut own, t("Color propio")).changed() {
@@ -2085,7 +2093,9 @@ impl App {
         section(ui, t("Aspecto"));
         ui.label(t("Texto"));
         ui.add(TextEdit::singleline(&mut dial.label).desired_width(f32::INFINITY));
-        icon_field(ui, &mut dial.icon, &self.glyphs, &mut self.icon_query);
+        if icon_field(ui, &mut dial.icon, &self.glyphs, &mut self.icon_query) {
+            (self.icon_target, self.icon_store.open) = (Some(Sel::Dial(i)), true);
+        }
 
         section(ui, t("Acciones"));
         code(ui, t("Girar a la derecha"), &mut dial.right, "");
@@ -2126,6 +2136,22 @@ impl App {
         if remove {
             page.dials.remove(idx);
             self.tested.remove(&Sel::Dial(i));
+        }
+    }
+
+    /// The icon store, while open: the icon picked goes on the key or dial it was opened for.
+    fn icon_store_ui(&mut self, ctx: &egui::Context) {
+        let Some(sel) = self.icon_target else { return };
+        if let Some(path) = self.icon_store.ui(ctx) {
+            let page = &mut self.cfg.pages[self.page];
+            match sel {
+                Sel::Key(i) => page.keys.iter_mut().filter(|k| k.pos == i).for_each(|k| k.icon = path.clone()),
+                Sel::Dial(i) => page.dials.iter_mut().filter(|d| d.pos == i).for_each(|d| d.icon = path.clone()),
+            }
+            self.notice = t("Ícono puesto").into();
+        }
+        if !self.icon_store.open {
+            self.icon_target = None;
         }
     }
 
@@ -2170,6 +2196,7 @@ impl eframe::App for App {
         self.shortcuts(&ctx);
         self.track_history(&ctx);
         self.apply_style(&ctx);
+        self.icon_store_ui(&ctx);
         self.refresh(&ctx);
         self.sidebar(ui);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
@@ -2521,12 +2548,20 @@ fn instance_for(action: &str) -> String {
     if action.is_empty() { String::new() } else { fluxdeck_core::plugins::new_instance() }
 }
 
-fn icon_field(ui: &mut egui::Ui, icon: &mut String, glyphs: &[(char, String)], query: &mut String) {
-    ui.label(t("Icono"));
-    ui.add(TextEdit::singleline(icon).desired_width(f32::INFINITY).hint_text(t("Un glifo, o la ruta a una imagen PNG")));
+/// The icon of a key or dial: a glyph or an image path, a glyph search, and the icon store button.
+/// Returns true when the store was asked for.
+fn icon_field(ui: &mut egui::Ui, icon: &mut String, glyphs: &[(char, String)], query: &mut String) -> bool {
+    let mut store = false;
+    ui.horizontal(|ui| {
+        ui.label(t("Icono"));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            store = ui.button(t("Tienda de íconos…")).on_hover_text(t("Miles de íconos libres: Material, logos de apps y más")).clicked();
+        });
+    });
+    ui.add(TextEdit::singleline(icon).desired_width(f32::INFINITY).hint_text(t("Un glifo, o la ruta a una imagen (PNG o SVG)")));
     if glyphs.is_empty() {
         ui.label(RichText::new(t("Instala una Nerd Font para buscar iconos por nombre.")).weak());
-        return;
+        return store;
     }
     egui::CollapsingHeader::new(t("Buscar icono")).id_salt("icons").show(ui, |ui| {
         ui.add(TextEdit::singleline(query).hint_text(t("volume, mic, github, play…")).desired_width(f32::INFINITY));
@@ -2545,6 +2580,7 @@ fn icon_field(ui: &mut egui::Ui, icon: &mut String, glyphs: &[(char, String)], q
             });
         });
     });
+    store
 }
 
 /// Same as the daemon: `sh -c`, with this binary's folder first in PATH so `fluxdeck …` resolves.

@@ -50,7 +50,7 @@ pub fn fetch(url: &str, to: &Path) -> bool {
     Command::new("curl").args(["-sfL", "--max-time", "120", "-H", "User-Agent: fluxdeck", "-o"]).arg(to).arg(url).status().is_ok_and(|s| s.success())
 }
 
-fn fetch_json(url: &str, file: &str, max_age: Duration) -> Option<Value> {
+pub(crate) fn fetch_json(url: &str, file: &str, max_age: Duration) -> Option<Value> {
     let path = cache().join(file);
     let fresh = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < max_age);
     if !fresh {
