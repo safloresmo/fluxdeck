@@ -309,7 +309,8 @@ impl Store {
 fn rows(ui: &mut egui::Ui, n: usize, size: egui::Vec2, mut cell: impl FnMut(&mut egui::Ui, usize)) {
     let per_row = ((ui.available_width() - 40.0) / (size.x + 10.0)).floor().max(1.0) as usize;
     for start in (0..n).step_by(per_row) {
-        ui.horizontal(|ui| {
+        // Top-aligned: cards whose content is shorter must not sink to the middle of the row.
+        ui.horizontal_top(|ui| {
             ui.add_space(20.0);
             ui.spacing_mut().item_spacing.x = 10.0;
             for i in start..(start + per_row).min(n) {
