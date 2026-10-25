@@ -196,7 +196,7 @@ impl Home {
                             device(ui, "\u{f036c}", "Elgato XLR Dock", None, accent);
                         }
                         for (name, kind, level) in &s.batteries {
-                            device(ui, &corsair::icon(*kind).to_string(), &fluxdeck_core::presets::title(name), Some(*level), if *level <= 20 { red } else { accent });
+                            device(ui, &corsair::icon(*kind).to_string(), &fluxdeck_core::presets::title(name), Some(*level), battery_color(*level, accent));
                         }
                         if deck.is_none() && !s.dock && s.batteries.is_empty() {
                             ui.label(RichText::new(t("Ninguno detectado.")).weak());
@@ -245,6 +245,15 @@ fn summary(ui: &mut egui::Ui, card: Color32, w: f32, icon: &str, title: &str, ma
         ui.painter().rect_stroke(r.rect, 18, egui::Stroke::new(1.5, accent), egui::StrokeKind::Inside);
     }
     r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// Battery colour everywhere: red at 15 % or less, amber at 30 % or less, else the accent.
+pub fn battery_color(level: u64, accent: Color32) -> Color32 {
+    match level {
+        0..=15 => Color32::from_rgb(229, 72, 77),
+        16..=30 => Color32::from_rgb(217, 164, 65),
+        _ => accent,
+    }
 }
 
 fn device(ui: &mut egui::Ui, icon: &str, name: &str, battery: Option<u64>, color: Color32) {

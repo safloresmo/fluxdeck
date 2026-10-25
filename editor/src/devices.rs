@@ -1,7 +1,7 @@
 //! Peripherals view: one card per Corsair device seen by OpenLinkHub.
 use crate::mic::{card_frame, toggle};
 use fluxdeck_core::corsair::{self, LEVELS, Live};
-use fluxdeck_core::i18n::t;
+use fluxdeck_core::i18n::{t, tf};
 use eframe::egui::{self, Color32, RichText, Sense, vec2};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -131,8 +131,13 @@ impl Devices {
         ui.add_space(8.0);
         if let Some(b) = live.battery {
             ui.label(t("Batería"));
-            bar(ui, b as f32 / 100.0, if b <= 15 { Color32::from_rgb(229, 72, 77) } else { accent });
-            ui.label(RichText::new(format!("{b}%")).weak().size(12.0));
+            let color = crate::home::battery_color(b as u64, accent);
+            bar(ui, b as f32 / 100.0, color);
+            if b <= 30 {
+                ui.label(RichText::new(tf("{}% · batería baja", &[&b.to_string()])).color(color).size(12.0));
+            } else {
+                ui.label(RichText::new(format!("{b}%")).weak().size(12.0));
+            }
             ui.add_space(8.0);
         }
         if let Some(anc) = live.anc {
@@ -158,9 +163,9 @@ impl Devices {
         }
         if let Some(cur) = live.effect.clone() {
             ui.label(t("Efecto de luz"));
-            egui::ComboBox::from_id_salt(("effect", &d.serial)).selected_text(&cur).width(220.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(("effect", &d.serial)).selected_text(corsair::effect_name(&cur)).width(220.0).show_ui(ui, |ui| {
                 for e in &live.effects {
-                    if ui.selectable_label(*e == cur, e).clicked() && *e != cur {
+                    if ui.selectable_label(*e == cur, corsair::effect_name(e)).clicked() && *e != cur {
                         live.effect = Some(e.clone());
                         self.send(Write::Effect(d.serial.clone(), e.clone()));
                     }

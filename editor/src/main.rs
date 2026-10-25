@@ -930,7 +930,9 @@ impl App {
                     for (fkey, name) in rows {
                         ui.add_space(6.0);
                         let label = if name == fkey { name.clone() } else { format!("{name}  ({fkey})") };
-                        egui::CollapsingHeader::new(RichText::new(label).strong()).id_salt(("xk", &fkey)).show(ui, |ui| {
+                        let what = steps_summary(self.cfg.extra_keys.get(&fkey).map_or(&[][..], |s| s.as_slice()), &apps);
+                        let label = RichText::new(format!("{label}   ·   {what}")).strong();
+                        egui::CollapsingHeader::new(label).id_salt(("xk", &fkey)).show(ui, |ui| {
                             let steps = self.cfg.extra_keys.entry(fkey.clone()).or_default();
                             steps_editor(ui, steps, &pages, &apps);
                         });
@@ -2390,6 +2392,20 @@ fn live_plugin_image(instance: &str) -> Option<RgbaImage> {
 }
 
 /// A key's sequence: one row per step, in order, with buttons to add, move and remove.
+/// One line saying what a sequence does: its first step and how many more follow.
+fn steps_summary(steps: &[fluxdeck_core::Step], apps: &[fluxdeck_core::apps::App]) -> String {
+    use fluxdeck_core::Step;
+    let Some(first) = steps.first() else { return t("Sin asignar").into() };
+    let short = |s: &str| if s.chars().count() > 40 { format!("{}…", s.chars().take(40).collect::<String>()) } else { s.to_string() };
+    let what = match first {
+        Step::Command { run } => short(run),
+        Step::Page { name } => tf("Página «{}»", &[name]),
+        Step::App { id } => tf("Abre {}", &[&apps.iter().find(|a| a.id == *id).map_or(id.clone(), |a| a.name.clone())]),
+        Step::Wait { ms } => tf("Espera {} ms", &[&ms.to_string()]),
+    };
+    if steps.len() > 1 { tf("{} y {} pasos más", &[&what, &(steps.len() - 1).to_string()]) } else { what }
+}
+
 fn steps_editor(ui: &mut egui::Ui, steps: &mut Vec<fluxdeck_core::Step>, pages: &[String], apps: &[fluxdeck_core::apps::App]) {
     use fluxdeck_core::Step;
     ui.label(RichText::new(t("Pasos que se hacen en orden al presionar, después del comando.")).weak().size(12.5));

@@ -200,6 +200,51 @@ pub fn lcd_mode_name(name: &str) -> String {
     }
 }
 
+/// A readable name for an OpenLinkHub light effect id; unknown ones are shown capitalised.
+pub fn effect_name(id: &str) -> String {
+    let t = |s: &'static str| crate::i18n::t(s).to_string();
+    match id {
+        "off" => t("Apagado"),
+        "static" => t("Color fijo"),
+        "custom" => t("Personalizado"),
+        "rainbow" => t("Arcoíris"),
+        "rainbowwave" => t("Ola arcoíris"),
+        "pastelrainbow" => t("Arcoíris pastel"),
+        "spiralrainbow" => t("Espiral arcoíris"),
+        "pastelspiralrainbow" => t("Espiral arcoíris pastel"),
+        "colorwave" => t("Ola de color"),
+        "colorpulse" => t("Pulso de color"),
+        "colorshift" => t("Cambio de color"),
+        "colorwarp" => t("Color deformado"),
+        "circle" => t("Círculo"),
+        "circleshift" => t("Círculo cambiante"),
+        "arc" => t("Arco"),
+        "flickering" => t("Parpadeo"),
+        "gradient" => t("Degradado"),
+        "marquee" => t("Marquesina"),
+        "nebula" => t("Nebulosa"),
+        "rain" => t("Lluvia"),
+        "storm" => t("Tormenta"),
+        "watercolor" => t("Acuarela"),
+        "rotator" => t("Giro"),
+        "rotarystack" => t("Pila giratoria"),
+        "spinner" => t("Remolino"),
+        "sequential" => t("Secuencial"),
+        "visor" => t("Visor"),
+        "keyboard" => t("Teclado"),
+        "mouse" => t("Ratón"),
+        "mousepad" => t("Alfombrilla"),
+        "headset" => t("Audífonos"),
+        "stand" => t("Base"),
+        "controller" => t("Control"),
+        "led" => t("LED"),
+        other => {
+            let mut c = other.chars();
+            c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+        }
+    }
+}
+
 /// 0 off, 1 on, 2 transparency.
 pub fn set_anc(serial: &str, mode: i64) -> Result<(), String> {
     post("/api/headset/anc", json!({ "deviceId": serial, "noiseCancellation": mode }))
@@ -230,6 +275,14 @@ pub fn level_index(mode: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_names_are_readable() {
+        crate::i18n::init("es");
+        assert_eq!(effect_name("colorwave"), "Ola de color");
+        assert_eq!(effect_name("tlk"), "Tlk");
+        assert_eq!(effect_name(""), "");
+    }
 
     #[test]
     fn levels_round_trip() {
