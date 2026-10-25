@@ -503,8 +503,29 @@ pub fn card_frame(fill: Color32) -> egui::Frame {
     egui::Frame::new().fill(fill).corner_radius(18).inner_margin(20)
 }
 
+/// Relative luminance, as WCAG defines it.
+fn luminance(c: Color32) -> f32 {
+    let lin = |c: u8| {
+        let v = c as f32 / 255.0;
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast ratio between two colours, 1 to 21.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// Text that stays legible on `fill`: near-black on light colours, white on dark ones.
+pub fn ink(fill: Color32) -> Color32 {
+    // Where white and black would read equally well, luminance is about 0.18.
+    if luminance(fill) > 0.18 { Color32::from_rgb(28, 20, 22) } else { Color32::WHITE }
+}
+
 pub fn toggle(ui: &mut egui::Ui, on: bool, text: &str, color: Color32) -> bool {
-    let b = egui::Button::new(RichText::new(text).color(if on { Color32::WHITE } else { ui.visuals().text_color() })).min_size(vec2(72.0, 30.0));
+    let b = egui::Button::new(RichText::new(text).color(if on { ink(color) } else { ui.visuals().text_color() })).min_size(vec2(72.0, 30.0));
     ui.add(if on { b.fill(color) } else { b }).clicked()
 }
 
@@ -585,6 +606,19 @@ impl Drop for Mic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ink_reads_on_light_and_dark_fills() {
+        assert_ne!(ink(Color32::from_rgb(247, 157, 173)), Color32::WHITE, "light pink accent");
+        assert_eq!(ink(Color32::from_rgb(179, 38, 30)), Color32::WHITE, "mute red");
+        assert_eq!(ink(Color32::from_rgb(138, 90, 0)), Color32::WHITE, "48 V amber");
+    }
+
+    #[test]
+    fn contrast_matches_wcag() {
+        assert!((contrast(Color32::WHITE, Color32::BLACK) - 21.0).abs() < 0.01);
+        assert!((contrast(Color32::WHITE, Color32::WHITE) - 1.0).abs() < 0.01);
+    }
 
     #[test]
     fn hides_internals_and_formats_conf() {

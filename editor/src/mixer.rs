@@ -221,7 +221,7 @@ impl Mixer {
                         ui.set_width(NAME_W);
                         ui.label(RichText::new(t("Canales")).size(22.0).strong());
                         let on = self.stream.on;
-                        let b = egui::Button::new(RichText::new(t("Mezcla para stream")).color(if on { Color32::WHITE } else { ui.visuals().text_color() })).min_size(vec2(72.0, 30.0));
+                        let b = egui::Button::new(RichText::new(t("Mezcla para stream")).color(if on { crate::mic::ink(accent) } else { ui.visuals().text_color() })).min_size(vec2(72.0, 30.0));
                         if ui.add(if on { b.fill(accent) } else { b })
                             .on_hover_text(t("Crea la salida «FluxDeck Stream» para OBS, con volumen propio para el micrófono y cada grupo. Al apagarla desaparece."))
                             .clicked()

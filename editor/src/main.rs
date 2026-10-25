@@ -651,6 +651,9 @@ impl App {
         v.window_fill = bg;
         v.extreme_bg_color = if light { mix(bg, Color32::WHITE, 0.7) } else { mix(bg, Color32::BLACK, 0.35) };
         v.faint_bg_color = mix(bg, key, 0.5);
+        // Secondary text: as dim as it can be while still reading on a card (WCAG AA 4.5:1, with margin).
+        let card = v.faint_bg_color;
+        v.weak_text_color = Some((10..=20).map(|i| mix(card, text, i as f32 / 20.0)).find(|c| mic::contrast(*c, card) >= 4.8).unwrap_or(text));
         v.selection.bg_fill = accent;
         // Text on the accent fill (selected tab, highlighted item) uses the surface colour to stay legible.
         v.selection.stroke = Stroke::new(1.0, bg);
