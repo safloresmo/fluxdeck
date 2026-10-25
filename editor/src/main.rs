@@ -782,10 +782,15 @@ impl App {
                         Some(s) if !s.model.is_empty() => (Color32::from_rgb(80, 200, 120), tf("{} · en «{}»", &[&model_name(&s.model), &s.page])),
                         _ => (Color32::from_gray(120), t("Esperando un Stream Deck").into()),
                     };
-                    ui.label(RichText::new(text).weak());
-                    ui.label(RichText::new("●").color(dot));
+                    // In a narrow window the page tabs come first: the status shrinks to its dot.
+                    if ui.available_width() > 140.0 {
+                        ui.add(egui::Label::new(RichText::new(&text).weak()).truncate()).on_hover_text(&text);
+                    }
+                    ui.label(RichText::new("●").color(dot)).on_hover_text(&text);
                 }
-                ui.label(RichText::new(&self.notice).weak());
+                if ui.available_width() > 120.0 {
+                    ui.add(egui::Label::new(RichText::new(&self.notice).weak()).truncate()).on_hover_text(&self.notice);
+                }
             });
         }
     }
@@ -949,8 +954,9 @@ impl App {
     fn profiles_empty(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
         ui.horizontal(|ui| {
             ui.add_space(24.0);
-            egui::Frame::new().fill(card).corner_radius(18).inner_margin(28).show(ui, |ui| {
-                ui.set_width(560.0);
+            let width = (ui.available_width() - 80.0).clamp(280.0, 560.0);
+            egui::Frame::new().fill(card).corner_radius(18).inner_margin(28).show(ui, |ui| ui.vertical(|ui| {
+                ui.set_width(width);
                 ui.label(RichText::new("\u{f0297}").size(40.0).color(accent));
                 ui.add_space(6.0);
                 ui.label(RichText::new(t("Que todo cambie según la app que uses")).size(19.0).strong());
@@ -960,9 +966,9 @@ impl App {
                     ("2", t("El Chat sube al 100 % y la Música baja al 40 %; si quieres, también el deck cambia de página.")),
                     ("3", t("Cierras el juego y todo vuelve como estaba.")),
                 ] {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_top(|ui| {
                         ui.label(RichText::new(step).size(13.0).strong().color(accent));
-                        ui.label(RichText::new(text).size(13.5));
+                        ui.add(egui::Label::new(RichText::new(text).size(13.5)).wrap());
                     });
                 }
                 ui.add_space(14.0);
@@ -977,7 +983,7 @@ impl App {
                         self.profile_sel = 0;
                     }
                 });
-            });
+            }));
         });
     }
 
