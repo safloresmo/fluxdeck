@@ -71,6 +71,8 @@ struct App {
     saved: Config,
     /// Set when config.toml could not be parsed: saving would destroy it.
     blocked: Option<String>,
+    /// When the last automatic save failed; it is tried again a little later, not every frame.
+    save_failed: Option<Instant>,
     theme: Theme,
     styled: Option<Theme>,
     theme_checked: Instant,
@@ -202,6 +204,7 @@ impl App {
             history: Vec::new(),
             future: Vec::new(),
             committed: Config::default(),
+            save_failed: None,
             prev_frame: Config::default(),
             changed_at: Instant::now(),
             clip: None,
@@ -248,6 +251,11 @@ impl App {
         let settled = ctx.dragged_id().is_none() && (!ctx.egui_wants_keyboard_input() || self.changed_at.elapsed() > Duration::from_millis(900));
         if self.cfg != self.committed && settled && self.changed_at.elapsed() > Duration::from_millis(150) {
             self.commit();
+        }
+        // Every change is saved on its own once it settles; a failed save waits before trying again.
+        let retry = self.save_failed.is_none_or(|at| at.elapsed() > Duration::from_secs(5));
+        if self.dirty() && settled && self.changed_at.elapsed() > Duration::from_millis(150) && self.blocked.is_none() && retry {
+            self.save();
         }
     }
 
@@ -493,11 +501,12 @@ impl App {
                 if plugins_changed {
                     self.redetect();
                 }
-                self.notice = t("Guardado").into();
+                self.save_failed = None;
                 true
             }
             Err(e) => {
                 self.notice = tf("No se pudo guardar: {}", &[&e.to_string()]);
+                self.save_failed = Some(Instant::now());
                 false
             }
         }
@@ -741,11 +750,15 @@ impl App {
         }
         {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if self.dirty() { t("Guardar  ●") } else { t("Guardar") };
-                if ui.add_enabled(self.dirty(), egui::Button::new(label)).on_hover_text("Ctrl+S").clicked() {
-                    self.save();
+                if self.blocked.is_some() || self.save_failed.is_some() {
+                    if ui.button(RichText::new(t("Sin guardar · reintentar")).color(Color32::from_rgb(229, 72, 77))).clicked() {
+                        self.save();
+                    }
+                } else {
+                    let (text, tip) = if self.dirty() { (t("Guardando…"), t("Se guarda solo al terminar el cambio")) } else { (t("Guardado ✓"), t("Los cambios se guardan solos")) };
+                    ui.label(RichText::new(text).weak().size(12.5)).on_hover_text(tip);
                 }
-                if ui.button(t("Recargar")).on_hover_text(t("Leer de nuevo el archivo y descartar lo no guardado")).clicked() {
+                if ui.button(t("Recargar")).on_hover_text(t("Leer de nuevo el archivo, por si lo editaste a mano")).clicked() {
                     self.reload();
                 }
                 if ui.add_enabled(!self.future.is_empty(), egui::Button::new(RichText::new("\u{f044f}").size(16.0))).on_hover_text(t("Rehacer (Ctrl+Shift+Z)")).clicked() {
@@ -921,8 +934,6 @@ impl App {
                     }
                     // Keys left without steps are not kept in the config.
                     self.cfg.extra_keys.retain(|_, s| !s.is_empty());
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(t("Guarda para aplicar los cambios.")).weak().size(12.5));
                 });
             });
         });
@@ -1119,8 +1130,6 @@ impl App {
             code(ui, t("Comando al activarse"), &mut p.command, "obs --startreplaybuffer");
             ui.add_space(6.0);
             ui.checkbox(&mut p.restore, t("Al salir de la app, volver a la página y volúmenes de antes"));
-            ui.add_space(6.0);
-            ui.label(RichText::new(t("Guarda para aplicar los cambios.")).weak().size(12.5));
         });
     }
 
@@ -1228,7 +1237,7 @@ impl App {
                         self.cfg.groups.push(fluxdeck_core::groups::Group { id, name: t("Nuevo grupo").into(), icon: "\u{f075a}".into(), apps: vec![] });
                     }
                     ui.add_space(6.0);
-                    ui.label(RichText::new(t("Basta con parte del nombre: «chrom» sirve para Chrome y Chromium. Guarda para aplicar los cambios.")).weak().size(12.5));
+                    ui.label(RichText::new(t("Basta con parte del nombre: «chrom» sirve para Chrome y Chromium.")).weak().size(12.5));
                 });
             });
         });
@@ -1329,7 +1338,7 @@ impl App {
                 let hint = if !has_page {
                     t("Esta acción no tiene ajustes.")
                 } else if !saved {
-                    t("Guarda primero para abrir sus ajustes.")
+                    t("Guardando…")
                 } else {
                     t("El servicio de FluxDeck no está corriendo.")
                 };
@@ -1691,10 +1700,10 @@ impl App {
             ui.label(RichText::new(hint).weak().size(12.5));
             ui.add_space(8.0);
         }
-        setting(ui, card, t("Brillo del deck"), t("Se aplica al guardar"), |ui| {
+        setting(ui, card, t("Brillo del deck"), t("Se aplica al soltar la barra"), |ui| {
             ui.add(egui::Slider::new(&mut self.cfg.brightness, 0..=100).suffix("%"));
         });
-        setting(ui, card, t("Idioma"), t("El idioma cambia al guardar y abrir de nuevo"), |ui| {
+        setting(ui, card, t("Idioma"), t("Cambia al abrir de nuevo FluxDeck"), |ui| {
             let names = [("", t("Del sistema")), ("es", "Español"), ("en", "English")];
             let shown = names.iter().find(|(c, _)| *c == self.cfg.language).map_or(names[0].1, |(_, n)| n);
             egui::ComboBox::from_id_salt("lang").selected_text(shown).show_ui(ui, |ui| {
@@ -1879,7 +1888,6 @@ impl App {
                     if !on {
                         self.cfg.disabled_plugins.push(p.uuid.clone());
                     }
-                    self.notice = t("Se aplica al guardar").into();
                 }
             });
         }
@@ -2066,7 +2074,7 @@ impl App {
     }
 
     fn close_guard(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) && self.dirty() && !self.closing {
+        if ctx.input(|i| i.viewport().close_requested()) && self.dirty() && !self.closing && (self.blocked.is_some() || !self.save()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_close = true;
         }
@@ -2074,11 +2082,11 @@ impl App {
             return;
         }
         egui::Modal::new(Id::unique("close")).show(ctx, |ui| {
-            ui.label(RichText::new(t("Hay cambios sin guardar")).size(17.0).strong());
+            ui.label(RichText::new(t("No se pudieron guardar los cambios")).size(17.0).strong());
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let mut close = false;
-                if ui.button(t("Guardar y salir")).clicked() && self.save() {
+                if ui.button(t("Reintentar y salir")).clicked() && self.save() {
                     close = true;
                 }
                 if ui.button(t("Salir sin guardar")).clicked() {
