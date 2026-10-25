@@ -14,7 +14,6 @@ pub enum Go {
     Audio,
     Devices,
     Plugins,
-    Settings,
     StartService,
 }
 
@@ -113,7 +112,7 @@ impl Home {
             alerts.push((amber, tf("Batería baja en {}: {}%", &[name, &level.to_string()]), None));
         }
         for p in &s.plugins_broken {
-            alerts.push((amber, tf("El plugin «{}» no puede correr aquí.", &[p]), Some((t("Ver plugins"), Go::Settings))));
+            alerts.push((amber, tf("El plugin «{}» no puede correr aquí.", &[p]), Some((t("Ver plugins"), Go::Plugins))));
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {

@@ -113,7 +113,8 @@ impl Store {
         self.installed.iter().find(|p| p.uuid == id || p.uuid == id.trim_end_matches(".sdPlugin"))
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
+    /// `disabled` is the config's list of plugins switched off, by uuid.
+    pub fn ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32, disabled: &mut Vec<String>) {
         // Pick up finished installs.
         let working = self.jobs.lock().unwrap().values().any(|j| matches!(j, Job::Working));
         if working {
@@ -140,7 +141,7 @@ impl Store {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(4.0);
             if !self.installed.is_empty() {
-                self.installed_ui(ui, card, accent);
+                self.installed_ui(ui, card, accent, disabled);
                 ui.add_space(14.0);
             }
             ui.horizontal(|ui| {
@@ -174,7 +175,7 @@ impl Store {
         });
     }
 
-    fn installed_ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
+    fn installed_ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32, disabled: &mut Vec<String>) {
         ui.horizontal(|ui| {
             ui.add_space(20.0);
             ui.label(RichText::new(t("Instalados")).size(17.0).strong());
@@ -201,6 +202,13 @@ impl Store {
                         ui.label(RichText::new(text).color(color).size(12.5));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut on = !disabled.contains(&p.uuid);
+                        if crate::toggle_switch(ui, &mut on) {
+                            disabled.retain(|u| *u != p.uuid);
+                            if !on {
+                                disabled.push(p.uuid.clone());
+                            }
+                        }
                         let confirming = self.confirm_remove.as_deref() == Some(&p.uuid);
                         let label = if confirming { t("¿Quitar?") } else { t("Quitar") };
                         if ui.button(label).clicked() {

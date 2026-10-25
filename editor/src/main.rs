@@ -1905,37 +1905,20 @@ impl App {
                 self.ryoku_widget = None;
             }
         }
+        // Plugins are installed, switched on and off, and removed in one place: the Plugins page.
         ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(t("Plugins")).size(16.0).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(t("Abrir la tienda")).clicked() {
-                    self.view = View::Plugins;
-                }
-            });
-        });
-        ui.add_space(6.0);
         let installed = fluxdeck_core::plugins::installed();
-        if installed.is_empty() {
-            ui.label(RichText::new(t("Ningún plugin instalado.")).weak());
-        }
-        for p in &installed {
-            let about = match p.missing() {
-                None => tf("{} acciones · versión {}", &[&p.manifest.actions.len().to_string(), &p.manifest.version]),
-                Some("node") => t("Necesita Node.js").into(),
-                Some("wine") => t("Necesita Wine").into(),
-                _ => t("No funciona en este sistema").into(),
-            };
-            let mut on = !self.cfg.disabled_plugins.contains(&p.uuid);
-            setting(ui, card, &p.manifest.name, &about, |ui| {
-                if toggle_switch(ui, &mut on) {
-                    self.cfg.disabled_plugins.retain(|u| *u != p.uuid);
-                    if !on {
-                        self.cfg.disabled_plugins.push(p.uuid.clone());
-                    }
-                }
-            });
-        }
+        let off = installed.iter().filter(|p| self.cfg.disabled_plugins.contains(&p.uuid)).count();
+        let about = match (installed.len(), off) {
+            (0, _) => t("Ningún plugin instalado.").to_string(),
+            (n, 0) => tf("{} instalados, todos activos", &[&n.to_string()]),
+            (n, off) => tf("{} instalados, {} apagados", &[&n.to_string(), &off.to_string()]),
+        };
+        setting(ui, card, t("Plugins"), &about, |ui| {
+            if ui.button(t("Administrar")).clicked() {
+                self.view = View::Plugins;
+            }
+        });
         let _ = accent;
     }
 
@@ -2173,10 +2156,6 @@ impl eframe::App for App {
                 Some(home::Go::Audio) => self.view = View::Mic,
                 Some(home::Go::Devices) => self.view = if self.view_available(View::Devices) { View::Devices } else { View::Settings },
                 Some(home::Go::Plugins) => self.view = View::Plugins,
-                Some(home::Go::Settings) => {
-                    self.settings_tab = 2;
-                    self.view = View::Settings;
-                }
                 Some(home::Go::StartService) => self.start_service(),
                 None => {}
             }
@@ -2202,7 +2181,7 @@ impl eframe::App for App {
         if self.view == View::Plugins {
             let card = ui.visuals().faint_bg_color;
             let accent = self.accent();
-            egui::CentralPanel::default().show(ui, |ui| self.store.ui(ui, card, accent));
+            egui::CentralPanel::default().show(ui, |ui| self.store.ui(ui, card, accent, &mut self.cfg.disabled_plugins));
             self.close_guard(&ctx);
             return;
         }
@@ -2326,7 +2305,7 @@ fn setting(ui: &mut egui::Ui, card: Color32, title: &str, about: &str, control: 
 }
 
 /// An on/off switch; true when flipped.
-fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> bool {
+pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(42.0, 24.0), Sense::click());
     if resp.clicked() {
         *on = !*on;
