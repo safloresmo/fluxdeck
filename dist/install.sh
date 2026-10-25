@@ -10,16 +10,26 @@ units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 
 cargo build --release
+# Only a first install turns on starting with systemd; later updates keep the user's choice.
+first_install=0
+[[ -f "$units/$name.service" ]] || first_install=1
 install -Dm755 "target/release/$name" "$bin/$name"
 install -Dm755 "target/release/$name-editor" "$bin/$name-editor"
 install -Dm644 "dist/$name.service" "$units/$name.service"
 install -Dm644 "dist/$name-editor.desktop" "$apps/$name-editor.desktop"
 install -Dm644 "assets/$name.svg" "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$name.svg"
 
-# A copy started by hand would fight the service for the deck.
+# Swap the running copy for the new one, however it was started.
 pkill -x "$name" 2>/dev/null || true
 systemctl --user daemon-reload
-systemctl --user enable --now "$name.service"
+if [[ $first_install == 1 ]]; then
+    systemctl --user enable "$name.service"
+fi
+if systemctl --user is-enabled --quiet "$name.service"; then
+    systemctl --user restart "$name.service"
+else
+    setsid "$bin/$name" >/dev/null 2>&1 < /dev/null &
+fi
 
 if [[ "${1:-}" == "--udev" ]]; then
     sudo install -Dm644 "dist/70-$name.rules" "/etc/udev/rules.d/70-$name.rules"
@@ -27,4 +37,4 @@ if [[ "${1:-}" == "--udev" ]]; then
     sudo udevadm trigger --action=add --subsystem-match=hidraw --subsystem-match=usb
 fi
 
-echo "Listo: el servicio arranca solo con tu sesión y el editor está en el menú de apps."
+echo "Listo: FluxDeck está actualizado y el editor está en el menú de apps. Cómo arranca se elige en Ajustes → General."

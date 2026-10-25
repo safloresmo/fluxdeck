@@ -91,6 +91,11 @@ fn main() {
 }
 
 fn daemon() {
+    // One copy at a time: the desktop's startup list and systemd may both try.
+    if fluxdeck_core::paths::service_running() {
+        eprintln!("fluxdeck: already running");
+        return;
+    }
     let (tx, rx) = channel();
     let _watcher = watch(tx.clone());
     effectsrun::start();

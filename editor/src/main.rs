@@ -117,7 +117,7 @@ struct App {
     /// Audio view: 0 mixer, 1 microphone.
     audio_tab: usize,
     settings_tab: usize,
-    autostart: bool,
+    startup: fluxdeck_core::paths::Startup,
     zoom: f32,
     /// Apps playing, for the app picker, and when that was read.
     apps_now: (Vec<String>, Instant),
@@ -213,7 +213,7 @@ impl App {
             },
             // `--settings 2` opens a given tab.
             settings_tab: std::env::args().nth(2).and_then(|a| a.parse().ok()).unwrap_or(0),
-            autostart: fluxdeck_core::paths::autostart(),
+            startup: fluxdeck_core::paths::startup(),
             zoom: 0.0,
             apps_now: (Vec::new(), Instant::now() - Duration::from_secs(10)),
             new_app: HashMap::new(),
@@ -1660,20 +1660,33 @@ impl App {
     }
 
     fn settings_general(&mut self, ui: &mut egui::Ui, card: Color32) {
-        setting(ui, card, t("Arrancar con la sesión"), t("El servicio se inicia solo al entrar a tu escritorio"), |ui| {
-            if fluxdeck_core::paths::service_installed() {
-                let mut on = self.autostart;
-                if toggle_switch(ui, &mut on) {
-                    if fluxdeck_core::paths::set_autostart(on) {
-                        self.autostart = on;
+        setting(ui, card, t("Arranque"), t("Al encender, solo arranca el servicio: el ícono queda en la bandeja y ninguna ventana se abre"), |ui| {
+            use fluxdeck_core::paths::Startup;
+            let options = [(Startup::Systemd, t("Servicio del sistema")), (Startup::Desktop, t("Lo arranca mi escritorio")), (Startup::Manual, t("No arrancar solo"))];
+            for (mode, name) in options {
+                let installed = mode != Startup::Systemd || fluxdeck_core::paths::service_installed();
+                let r = ui.add_enabled(installed, egui::Button::selectable(self.startup == mode, name)).on_disabled_hover_text(t("Instálalo con dist/install.sh"));
+                if r.clicked() && self.startup != mode {
+                    if fluxdeck_core::paths::set_startup(mode) {
+                        self.startup = mode;
                     } else {
                         self.notice = t("No se pudo cambiar el arranque automático").into();
                     }
                 }
-            } else {
-                ui.label(RichText::new(t("Instálalo con dist/install.sh")).weak().size(12.5));
             }
         });
+        if self.startup == fluxdeck_core::paths::Startup::Desktop {
+            let listed = fluxdeck_core::paths::in_desktop_startup();
+            let ryoku = fluxdeck_core::paths::ryoku_desktop();
+            let hint = match (listed, ryoku) {
+                (true, true) => t("Ya está en la lista de inicio de tu escritorio.").to_string(),
+                (true, false) => t("Listo: tu escritorio lo arrancará al iniciar sesión.").to_string(),
+                (false, true) => t("Agrégalo en Ryoku Hub → Sistema → Sesión → Al iniciar: pulsa + y escribe «fluxdeck».").to_string(),
+                (false, false) => t("Agrega «fluxdeck» a los programas de inicio de tu escritorio.").to_string(),
+            };
+            ui.label(RichText::new(hint).weak().size(12.5));
+            ui.add_space(8.0);
+        }
         setting(ui, card, t("Brillo del deck"), t("Se aplica al guardar"), |ui| {
             ui.add(egui::Slider::new(&mut self.cfg.brightness, 0..=100).suffix("%"));
         });
