@@ -49,10 +49,28 @@ pub fn levels() -> BTreeMap<String, Level> {
 pub fn set_level(id: &str, level: Level) {
     let mut all = levels();
     all.insert(id.to_string(), level);
-    let path = levels_path();
+    save(&levels_path(), &all);
+}
+
+/// Which output each group plays on, by device name; a group not listed follows the default output.
+fn routes_path() -> PathBuf {
+    crate::paths::state().join("group-outputs.json")
+}
+
+pub fn routes() -> BTreeMap<String, String> {
+    std::fs::read_to_string(routes_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+pub fn set_route(id: &str, output: &str) {
+    let mut all = routes();
+    all.insert(id.to_string(), output.to_string());
+    save(&routes_path(), &all);
+}
+
+fn save<T: Serialize>(path: &std::path::Path, value: &T) {
     let _ = std::fs::create_dir_all(crate::paths::state());
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_string_pretty(&all).unwrap_or_default()).is_ok() {
+    if std::fs::write(&tmp, serde_json::to_string_pretty(value).unwrap_or_default()).is_ok() {
         let _ = std::fs::rename(tmp, path);
     }
 }
@@ -62,12 +80,25 @@ pub fn group_of<'a>(groups: &'a [Group], app: &mixer::Channel) -> Option<&'a Gro
     groups.iter().find(|g| g.matches(&app.label, &app.binary))
 }
 
-/// Brings every playing app to its group's volume and mute; returns how many streams changed.
+/// The output an app should move to so it plays where its group's route says, if it is elsewhere.
+/// A route to a device that is not plugged in, or an app not linked yet, is left alone.
+pub fn misrouted<'a>(route: Option<&'a String>, app: &mixer::Channel, snap: &Snapshot) -> Option<&'a String> {
+    let route = route?;
+    let target = snap.of(Kind::Output).find(|o| &o.name == route)?;
+    (app.device? != target.id).then_some(route)
+}
+
+/// Brings every playing app to its group's volume, mute and output; returns how many streams changed.
 pub fn apply(groups: &[Group], snap: &Snapshot) -> usize {
     let levels = levels();
+    let routes = routes();
     let mut changed = 0;
     for app in snap.of(Kind::Playback) {
         let Some(g) = group_of(groups, app) else { continue };
+        if let Some(output) = misrouted(routes.get(&g.id), app, snap) {
+            mixer::move_stream(app.id, output);
+            changed += 1;
+        }
         let want = levels.get(&g.id).copied().unwrap_or_default();
         if (app.volume - want.volume).abs() > 0.005 {
             mixer::set_volume(app.id, want.volume);
@@ -110,6 +141,18 @@ mod tests {
         assert!(g.matches("Google Chrome", ""));
         assert!(g.matches("", "chromium"));
         assert!(!g.matches("Firefox", "firefox"));
+    }
+
+    #[test]
+    fn moves_only_apps_on_another_plugged_in_output() {
+        let ch = |id, name: &str, kind, device| mixer::Channel { id, name: name.into(), label: String::new(), icon: String::new(), binary: String::new(), kind, volume: 1.0, muted: false, device, internal: false };
+        let snap = Snapshot { channels: vec![ch(1, "phones", Kind::Output, None), ch(2, "speakers", Kind::Output, None)], ..Default::default() };
+        let (phones, gone) = ("phones".to_string(), "usb".to_string());
+        assert_eq!(misrouted(Some(&phones), &ch(9, "", Kind::Playback, Some(2)), &snap), Some(&phones));
+        assert_eq!(misrouted(Some(&phones), &ch(9, "", Kind::Playback, Some(1)), &snap), None);
+        assert_eq!(misrouted(Some(&phones), &ch(9, "", Kind::Playback, None), &snap), None);
+        assert_eq!(misrouted(Some(&gone), &ch(9, "", Kind::Playback, Some(2)), &snap), None);
+        assert_eq!(misrouted(None, &ch(9, "", Kind::Playback, Some(2)), &snap), None);
     }
 
     #[test]

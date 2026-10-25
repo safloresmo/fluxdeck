@@ -1,6 +1,5 @@
-//! Audio mixer: the output and microphone in use, and every app playing or recording, each with
-//! its fader, mute and device.
-use crate::mic::card_frame;
+//! Audio mixer: outputs as columns, and the microphone, groups and apps as rows, each with its
+//! fader and mute; a dot marks the output a row plays on.
 use fluxdeck_core::i18n::{t, tf};
 use fluxdeck_core::groups;
 use fluxdeck_core::mixer::{self, Channel, Kind, Snapshot};
@@ -20,6 +19,7 @@ enum Op {
     Default(u32),
     Move(u32, String),
     Group(String, groups::Level, Vec<groups::Group>),
+    Route(String, String, Vec<groups::Group>),
 }
 
 impl Op {
@@ -31,6 +31,7 @@ impl Op {
             Op::Default(_) => "default".into(),
             Op::Move(id, _) => format!("t{id}"),
             Op::Group(id, _, _) => format!("g{id}"),
+            Op::Route(id, _, _) => format!("r{id}"),
         }
     }
 
@@ -42,6 +43,10 @@ impl Op {
             Op::Move(id, dev) => drop(mixer::move_stream(*id, dev)),
             Op::Group(id, level, all) => {
                 groups::set_level(id, *level);
+                groups::apply(all, &mixer::snapshot());
+            }
+            Op::Route(id, output, all) => {
+                groups::set_route(id, output);
                 groups::apply(all, &mixer::snapshot());
             }
         }
@@ -67,6 +72,7 @@ pub struct Mixer {
     /// A working copy of the config's hidden devices.
     hidden: Vec<String>,
     group_levels: std::collections::BTreeMap<String, groups::Level>,
+    routes: std::collections::BTreeMap<String, String>,
     levels_read: Instant,
 }
 
@@ -109,6 +115,7 @@ impl Mixer {
             shown_levels: [0.0; 2],
             hidden: Vec::new(),
             group_levels: groups::levels(),
+            routes: groups::routes(),
             levels_read: Instant::now(),
         }
     }
@@ -171,6 +178,7 @@ impl Mixer {
     }
 
     /// `hidden` lists devices the user took out of the menus; changing it is a config edit.
+    /// Laid out like Wave Link: a row per channel, a column per output, and a dot where each row plays.
     pub fn ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32, hidden: &mut Vec<String>, all_groups: &[groups::Group]) -> Option<Go> {
         self.sync(ui.ctx());
         ui.ctx().request_repaint_after(Duration::from_millis(40));
@@ -181,70 +189,120 @@ impl Mixer {
             ui.vertical_centered(|ui| ui.label(RichText::new(t("Leyendo el audio…")).weak()));
             return None;
         }
-        let outputs: Vec<Channel> = snap.of(Kind::Output).filter(|c| !c.internal).cloned().collect();
-        let inputs: Vec<Channel> = snap.of(Kind::Input).cloned().collect();
         self.hidden = hidden.clone();
-        // Apps in a group are controlled by the group's fader.
-        let playing: Vec<Channel> = snap.of(Kind::Playback).filter(|c| groups::group_of(all_groups, c).is_none()).cloned().collect();
         if self.levels_read.elapsed() > Duration::from_secs(2) && self.edited.elapsed() > Duration::from_secs(2) {
             self.group_levels = groups::levels();
+            self.routes = groups::routes();
             self.levels_read = Instant::now();
         }
+        let outputs: Vec<Channel> = snap.of(Kind::Output).filter(|c| !c.internal).cloned().collect();
+        let columns: Vec<Channel> = outputs.iter().filter(|o| !self.hidden.contains(&o.name)).cloned().collect();
+        let inputs: Vec<Channel> = snap.of(Kind::Input).cloned().collect();
+        let default_out = snap.default_of(Kind::Output).map(|c| c.id);
+        // An app on a filter (an equaliser) or on a hidden output is shown on the default one.
+        let lands = |dev: Option<u32>| dev.filter(|d| columns.iter().any(|c| c.id == *d)).or(default_out);
+        // Apps in a group are controlled by the group's row.
+        let playing: Vec<Channel> = snap.of(Kind::Playback).filter(|c| groups::group_of(all_groups, c).is_none()).cloned().collect();
         let recording: Vec<Channel> = snap.of(Kind::Record).cloned().collect();
 
         egui::ScrollArea::both().show(ui, |ui| {
             ui.add_space(16.0);
             ui.horizontal_top(|ui| {
                 ui.add_space(20.0);
-                ui.spacing_mut().item_spacing.x = 12.0;
-                if let Some(out) = snap.default_of(Kind::Output).cloned() {
-                    let level = Some(self.shown_levels[0]);
-                    group(ui, card, t("Salida"), |ui| {
-                        self.strip(ui, &out, &outputs, level, accent, None);
+                egui::Grid::new("matrix").spacing(vec2(8.0, 8.0)).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(NAME_W);
+                        ui.label(RichText::new(t("Canales")).size(22.0).strong());
                     });
-                }
-                if let Some(mic) = snap.default_of(Kind::Input).cloned() {
-                    let level = Some(self.shown_levels[1]);
-                    group(ui, card, t("Micrófono"), |ui| {
-                        if self.strip(ui, &mic, &inputs, level, accent, Some(t("Efectos"))) {
+                    for o in &columns {
+                        let level = (default_out == Some(o.id)).then_some(self.shown_levels[0]);
+                        self.output_header(ui, o, level, card, accent);
+                    }
+                    let hidden_here: Vec<String> = outputs.iter().filter(|o| self.hidden.contains(&o.name)).map(|o| o.name.clone()).collect();
+                    if !hidden_here.is_empty() && ui.button(tf("Mostrar {} ocultas", &[&hidden_here.len().to_string()])).clicked() {
+                        self.hidden.retain(|h| !hidden_here.contains(h));
+                    }
+                    ui.end_row();
+
+                    if let Some(mic) = snap.default_of(Kind::Input).cloned() {
+                        let mut effects = false;
+                        let mut pick = None;
+                        let (vol, mute) = channel_cell(ui, card, accent, icon_for(&mic), &mic.label, mic.volume, mic.muted, Some(self.shown_levels[1]), |ui| {
+                            pick = self.device_menu(ui, mic.id, Some(&mic), &inputs, "—");
+                            effects = ui.small_button(t("Efectos")).clicked();
+                        });
+                        if effects {
                             go = Some(Go::Effects);
                         }
-                    });
-                }
-                if !all_groups.is_empty() {
-                    group(ui, card, t("Grupos"), |ui| {
-                        ui.horizontal_top(|ui| {
-                            for g in all_groups {
-                                let members: Vec<String> = snap.of(Kind::Playback).filter(|c| groups::group_of(all_groups, c).is_some_and(|x| x.id == g.id)).map(|c| c.label.clone()).collect();
-                                self.group_strip(ui, g, &members, all_groups, accent);
-                            }
-                        });
-                    });
-                }
-                group(ui, card, t("Apps"), |ui| {
-                    if playing.is_empty() {
-                        empty(ui, t("Ninguna app está sonando."));
-                    }
-                    ui.horizontal_top(|ui| {
-                        for c in &playing {
-                            self.strip(ui, c, &outputs, None, accent, None);
+                        if let Some(d) = pick {
+                            self.send(Op::Default(d.id));
                         }
-                    });
-                });
-                if !recording.is_empty() {
-                    group(ui, card, t("Usan el micrófono"), |ui| {
-                        ui.horizontal_top(|ui| {
-                            for c in &recording {
-                                self.strip(ui, c, &inputs, None, accent, None);
-                            }
+                        self.channel_changes(&mic, vol, mute);
+                        blank_cells(ui, card, columns.len());
+                        ui.end_row();
+                    }
+
+                    for g in all_groups {
+                        let members: Vec<&Channel> = snap.of(Kind::Playback).filter(|c| groups::group_of(all_groups, c).is_some_and(|x| x.id == g.id)).collect();
+                        let mut level = self.group_levels.get(&g.id).copied().unwrap_or_default();
+                        let names: Vec<&str> = members.iter().map(|m| m.label.as_str()).collect();
+                        let (vol, mute) = channel_cell(ui, card, accent, &g.icon, &g.name, level.volume, level.muted, None, |ui| {
+                            let text = if names.is_empty() { t("Nada sonando").to_string() } else { names.join(", ") };
+                            ui.add(egui::Label::new(RichText::new(text).weak().size(11.5)).truncate()).on_hover_text(names.join("\n"));
                         });
-                    });
-                }
+                        if vol.is_some() || mute {
+                            level.volume = vol.unwrap_or(level.volume);
+                            level.muted ^= mute;
+                            self.group_levels.insert(g.id.clone(), level);
+                            self.send(Op::Group(g.id.clone(), level, all_groups.to_vec()));
+                        }
+                        let routed = self.routes.get(&g.id).and_then(|n| columns.iter().find(|c| &c.name == n)).map(|c| c.id);
+                        let here = routed.or_else(|| members.first().and_then(|m| lands(m.device))).or(default_out);
+                        for o in &columns {
+                            if route_cell(ui, card, accent, here == Some(o.id)) {
+                                self.routes.insert(g.id.clone(), o.name.clone());
+                                self.send(Op::Route(g.id.clone(), o.name.clone(), all_groups.to_vec()));
+                            }
+                        }
+                        ui.end_row();
+                    }
+
+                    for c in &playing {
+                        let (vol, mute) = channel_cell(ui, card, accent, icon_for(c), &c.label, c.volume, c.muted, None, |ui| {
+                            ui.label(RichText::new(&c.binary).weak().size(11.5));
+                        });
+                        self.channel_changes(c, vol, mute);
+                        let here = lands(c.device);
+                        for o in &columns {
+                            if route_cell(ui, card, accent, here == Some(o.id)) {
+                                let id = o.id;
+                                self.set_shown(c.id, |x| x.device = Some(id));
+                                self.send(Op::Move(c.id, o.name.clone()));
+                            }
+                        }
+                        ui.end_row();
+                    }
+
+                    for c in &recording {
+                        let mut pick = None;
+                        let current = c.device.and_then(|d| inputs.iter().find(|x| x.id == d));
+                        let (vol, mute) = channel_cell(ui, card, accent, icon_for(c), &c.label, c.volume, c.muted, None, |ui| {
+                            pick = self.device_menu(ui, c.id, current, &inputs, t("Predeterminada"));
+                        });
+                        if let Some(d) = pick {
+                            self.send(Op::Move(c.id, d.name));
+                        }
+                        self.channel_changes(c, vol, mute);
+                        blank_cells(ui, card, columns.len());
+                        ui.end_row();
+                    }
+                });
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
-                ui.label(RichText::new(t("Cada app puede ir a otra salida con el menú bajo su barra. Los cambios son al momento.")).weak().size(12.5));
+                let hint = if all_groups.is_empty() && playing.is_empty() { t("Ninguna app está sonando.") } else { t("Haz clic en un cruce para mandar ese canal a esa salida. Cada grupo recuerda la suya.") };
+                ui.label(RichText::new(hint).weak().size(12.5));
             });
         });
         if self.hidden != *hidden {
@@ -253,122 +311,77 @@ impl Mixer {
         go
     }
 
-    /// One channel: icon, name, fader with its level, percent, mute and device. Returns true when `extra` was clicked.
-    fn strip(&mut self, ui: &mut egui::Ui, c: &Channel, devices: &[Channel], level: Option<f32>, accent: Color32, extra: Option<&str>) -> bool {
-        let mut clicked = false;
-        let app = matches!(c.kind, Kind::Playback | Kind::Record);
-        ui.vertical(|ui| {
-            ui.set_width(118.0);
-            ui.spacing_mut().item_spacing.y = 6.0;
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(icon_for(c)).size(24.0).color(if c.muted { ui.visuals().weak_text_color() } else { accent }));
-                ui.add(egui::Label::new(RichText::new(&c.label).size(13.0).strong()).truncate()).on_hover_text(&c.label);
-            });
+    /// Sends a fader or mute change made on a device or app row.
+    fn channel_changes(&mut self, c: &Channel, volume: Option<f32>, mute: bool) {
+        if let Some(v) = volume {
+            self.set_shown(c.id, |x| x.volume = v);
+            self.send(Op::Volume(c.id, v));
+        }
+        if mute {
+            let m = !c.muted;
+            self.set_shown(c.id, |x| x.muted = m);
+            self.send(Op::Mute(c.id, m));
+        }
+    }
+
+    /// An output's column head: its name, whether it is the default, its fader and mute.
+    fn output_header(&mut self, ui: &mut egui::Ui, o: &Channel, level: Option<f32>, card: Color32, accent: Color32) {
+        let is_default = level.is_some();
+        let stroke = Stroke::new(1.5, if is_default { accent } else { Color32::TRANSPARENT });
+        cell_frame(card).stroke(stroke).show(ui, |ui| ui.vertical(|ui| {
+            ui.set_width(COL_W - 24.0);
             ui.horizontal(|ui| {
-                ui.add_space(28.0);
-                let mut v = c.volume;
-                let resp = ui.add_sized([28.0, 190.0], egui::Slider::new(&mut v, 0.0..=1.0).vertical().show_value(false));
-                if resp.changed() {
-                    self.set_shown(c.id, |x| x.volume = v);
-                    self.send(Op::Volume(c.id, v));
-                }
-                if let Some(l) = level {
-                    meter(ui, l, accent);
-                }
-            });
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(format!("{:.0}%", c.volume * 100.0)).size(13.0));
-                let (icon, tip) = if c.muted { ("\u{f0581}", t("Activar sonido")) } else { ("\u{f057e}", t("Silenciar")) };
-                let b = egui::Button::new(RichText::new(icon).size(16.0).color(if c.muted { Color32::WHITE } else { ui.visuals().text_color() })).min_size(vec2(44.0, 28.0));
-                let b = if c.muted { b.fill(Color32::from_rgb(179, 38, 30)) } else { b };
-                if ui.add(b).on_hover_text(tip).clicked() {
-                    let m = !c.muted;
-                    self.set_shown(c.id, |x| x.muted = m);
-                    self.send(Op::Mute(c.id, m));
-                }
-            });
-            // Which device: the default for output and microphone, the target for an app.
-            let current = if app { c.device.and_then(|d| devices.iter().find(|x| x.id == d)) } else { Some(c) };
-            // An app going through a filter (an equaliser) ends up on the default output.
-            let shown = current.map_or(if app { t("Predeterminada").to_string() } else { "—".to_string() }, |d| d.label.clone());
-            let mut pick = None;
-            let mut hide = None;
-            let mut unhide = false;
-            egui::ComboBox::from_id_salt(("dev", c.id)).selected_text(RichText::new(shown).size(12.0)).width(112.0).truncate().show_ui(ui, |ui| {
-                let hidden_here = devices.iter().filter(|d| self.hidden.contains(&d.name)).count();
-                for d in devices.iter().filter(|d| !self.hidden.contains(&d.name) || current.is_some_and(|x| x.id == d.id)) {
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(current.is_some_and(|x| x.id == d.id), &d.label).clicked() {
-                            pick = Some(d.clone());
-                        }
-                        if ui.small_button("\u{f0209}").on_hover_text(t("Ocultar de esta lista")).clicked() {
-                            hide = Some(d.name.clone());
-                        }
-                    });
-                }
-                if hidden_here > 0 {
-                    ui.separator();
-                    if ui.button(tf("Mostrar {} ocultos", &[&hidden_here.to_string()])).clicked() {
-                        unhide = true;
+                ui.label(RichText::new(icon_for(o)).size(20.0).color(if o.muted { ui.visuals().weak_text_color() } else { accent }));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("\u{f0209}").on_hover_text(t("Ocultar esta salida")).clicked() {
+                        self.hidden.push(o.name.clone());
                     }
-                }
+                    if is_default {
+                        ui.label(RichText::new("\u{f04ce}").color(accent)).on_hover_text(t("Predeterminada"));
+                    } else if ui.small_button("\u{f04d2}").on_hover_text(t("Usar como predeterminada")).clicked() {
+                        self.send(Op::Default(o.id));
+                    }
+                    ui.add(egui::Label::new(RichText::new(&o.label).size(13.5).strong()).truncate()).on_hover_text(&o.label);
+                });
             });
-            if let Some(h) = hide {
-                self.hidden.push(h);
-            }
-            if unhide {
-                let names: Vec<String> = devices.iter().map(|d| d.name.clone()).collect();
-                self.hidden.retain(|h| !names.contains(h));
-            }
-            if let Some(d) = pick {
-                if app {
-                    self.send(Op::Move(c.id, d.name.clone()));
-                } else {
-                    self.send(Op::Default(d.id));
-                }
-            }
-            if let Some(label) = extra {
-                ui.vertical_centered(|ui| {
-                    if ui.button(label).clicked() {
-                        clicked = true;
+            let (vol, mute) = fader(ui, o.volume, o.muted, level, accent, COL_W - 24.0 - 84.0);
+            self.channel_changes(o, vol, mute);
+        }));
+    }
+
+    /// A device picker that can hide devices from itself; returns the one picked.
+    fn device_menu(&mut self, ui: &mut egui::Ui, salt: u32, current: Option<&Channel>, devices: &[Channel], none: &str) -> Option<Channel> {
+        let shown = current.map_or(none.to_string(), |d| d.label.clone());
+        let mut pick = None;
+        let mut hide = None;
+        let mut unhide = false;
+        egui::ComboBox::from_id_salt(("dev", salt)).selected_text(RichText::new(shown).size(12.0)).width(140.0).truncate().show_ui(ui, |ui| {
+            let hidden_here = devices.iter().filter(|d| self.hidden.contains(&d.name)).count();
+            for d in devices.iter().filter(|d| !self.hidden.contains(&d.name) || current.is_some_and(|x| x.id == d.id)) {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(current.is_some_and(|x| x.id == d.id), &d.label).clicked() {
+                        pick = Some(d.clone());
+                    }
+                    if ui.small_button("\u{f0209}").on_hover_text(t("Ocultar de esta lista")).clicked() {
+                        hide = Some(d.name.clone());
                     }
                 });
             }
-        });
-        clicked
-    }
-
-    /// A group's fader: its own volume and mute, applied to every app in it.
-    fn group_strip(&mut self, ui: &mut egui::Ui, g: &groups::Group, members: &[String], all: &[groups::Group], accent: Color32) {
-        let mut level = self.group_levels.get(&g.id).copied().unwrap_or_default();
-        ui.vertical(|ui| {
-            ui.set_width(118.0);
-            ui.spacing_mut().item_spacing.y = 6.0;
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(&g.icon).size(24.0).color(if level.muted { ui.visuals().weak_text_color() } else { accent }));
-                ui.add(egui::Label::new(RichText::new(&g.name).size(13.0).strong()).truncate());
-            });
-            ui.horizontal(|ui| {
-                ui.add_space(36.0);
-                if ui.add_sized([28.0, 190.0], egui::Slider::new(&mut level.volume, 0.0..=1.0).vertical().show_value(false)).changed() {
-                    self.group_levels.insert(g.id.clone(), level);
-                    self.send(Op::Group(g.id.clone(), level, all.to_vec()));
+            if hidden_here > 0 {
+                ui.separator();
+                if ui.button(tf("Mostrar {} ocultos", &[&hidden_here.to_string()])).clicked() {
+                    unhide = true;
                 }
-            });
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(format!("{:.0}%", level.volume * 100.0)).size(13.0));
-                let (icon, tip) = if level.muted { ("\u{f0581}", t("Activar sonido")) } else { ("\u{f057e}", t("Silenciar")) };
-                let b = egui::Button::new(RichText::new(icon).size(16.0).color(if level.muted { Color32::WHITE } else { ui.visuals().text_color() })).min_size(vec2(44.0, 28.0));
-                let b = if level.muted { b.fill(Color32::from_rgb(179, 38, 30)) } else { b };
-                if ui.add(b).on_hover_text(tip).clicked() {
-                    level.muted = !level.muted;
-                    self.group_levels.insert(g.id.clone(), level);
-                    self.send(Op::Group(g.id.clone(), level, all.to_vec()));
-                }
-                let text = if members.is_empty() { t("Nada sonando").to_string() } else { members.join(", ") };
-                ui.add(egui::Label::new(RichText::new(text).weak().size(11.5)).truncate()).on_hover_text(members.join("\n"));
-            });
+            }
         });
+        if let Some(h) = hide {
+            self.hidden.push(h);
+        }
+        if unhide {
+            let names: Vec<String> = devices.iter().map(|d| d.name.clone()).collect();
+            self.hidden.retain(|h| !names.contains(h));
+        }
+        pick
     }
 
     fn set_shown(&mut self, id: u32, f: impl FnOnce(&mut Channel)) {
@@ -378,29 +391,88 @@ impl Mixer {
     }
 }
 
-fn group(ui: &mut egui::Ui, card: Color32, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    card_frame(card).inner_margin(16).show(ui, |ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new(title).size(15.0).strong());
-            ui.add_space(8.0);
-            add(ui);
+const NAME_W: f32 = 400.0;
+const COL_W: f32 = 200.0;
+const ROW_H: f32 = 68.0;
+
+fn cell_frame(card: Color32) -> egui::Frame {
+    egui::Frame::new().fill(card).corner_radius(14).inner_margin(12)
+}
+
+/// A row's head: icon, name, whatever `extra` adds under the name, then its fader and mute.
+/// Returns the new volume if it moved and whether mute was clicked.
+#[allow(clippy::too_many_arguments)]
+fn channel_cell(ui: &mut egui::Ui, card: Color32, accent: Color32, icon: &str, name: &str, volume: f32, muted: bool, level: Option<f32>, extra: impl FnOnce(&mut egui::Ui)) -> (Option<f32>, bool) {
+    let mut out = (None, false);
+    cell_frame(card).show(ui, |ui| {
+        ui.set_width(NAME_W - 24.0);
+        ui.set_min_height(ROW_H - 24.0);
+        ui.horizontal(|ui| {
+            ui.add_sized([32.0, 32.0], egui::Label::new(RichText::new(icon).size(26.0).color(if muted { ui.visuals().weak_text_color() } else { accent })));
+            ui.vertical(|ui| {
+                ui.set_width(150.0);
+                ui.add(egui::Label::new(RichText::new(name).size(14.0).strong()).truncate()).on_hover_text(name);
+                extra(ui);
+            });
+            out = fader(ui, volume, muted, level, accent, 110.0);
         });
     });
+    out
 }
 
-fn empty(ui: &mut egui::Ui, text: &str) {
-    ui.allocate_ui(vec2(200.0, 60.0), |ui| ui.label(RichText::new(text).weak()));
+/// A horizontal fader with its percent, mute button and, when given, a level bar under it.
+fn fader(ui: &mut egui::Ui, volume: f32, muted: bool, level: Option<f32>, accent: Color32, width: f32) -> (Option<f32>, bool) {
+    let mut out = (None, false);
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().slider_width = width;
+            let mut v = volume;
+            if ui.add(egui::Slider::new(&mut v, 0.0..=1.0).show_value(false)).changed() {
+                out.0 = Some(v);
+            }
+            if let Some(l) = level {
+                let (rect, _) = ui.allocate_exact_size(vec2(width, 4.0), Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(rect, 2, ui.visuals().extreme_bg_color);
+                let mut fill = rect;
+                fill.set_right(rect.left() + rect.width() * l.clamp(0.0, 1.0));
+                p.rect_filled(fill, 2, if l > 0.92 { Color32::from_rgb(229, 72, 77) } else { accent });
+            }
+        });
+        ui.add_sized([34.0, 20.0], egui::Label::new(RichText::new(format!("{:.0}%", out.0.unwrap_or(volume) * 100.0)).size(12.5)));
+        let (icon, tip) = if muted { ("\u{f0581}", t("Activar sonido")) } else { ("\u{f057e}", t("Silenciar")) };
+        let b = egui::Button::new(RichText::new(icon).size(15.0).color(if muted { Color32::WHITE } else { ui.visuals().text_color() })).min_size(vec2(34.0, 26.0));
+        let b = if muted { b.fill(Color32::from_rgb(179, 38, 30)) } else { b };
+        out.1 = ui.add(b).on_hover_text(tip).clicked();
+    });
+    out
 }
 
-/// A thin vertical level bar beside a fader.
-fn meter(ui: &mut egui::Ui, level: f32, accent: Color32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(8.0, 190.0), Sense::hover());
+/// The height of the row being drawn, as the grid measured it last frame.
+fn row_height(ui: &egui::Ui) -> f32 {
+    ui.available_height().clamp(ROW_H, 160.0)
+}
+
+/// Where a row meets an output: a filled dot if it plays there; clicking an empty one sends it there.
+fn route_cell(ui: &mut egui::Ui, card: Color32, accent: Color32, on: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, row_height(ui)), Sense::click());
     let p = ui.painter();
-    p.rect_filled(rect, 4, ui.visuals().extreme_bg_color);
-    let mut fill = rect;
-    fill.set_top(rect.bottom() - rect.height() * level.clamp(0.0, 1.0));
-    p.rect_filled(fill, 4, if level > 0.92 { Color32::from_rgb(229, 72, 77) } else { accent });
-    p.rect_stroke(rect, 4, Stroke::new(1.0, Color32::from_black_alpha(60)), egui::StrokeKind::Inside);
+    p.rect_filled(rect, 14, card);
+    if on {
+        p.circle_filled(rect.center(), 9.0, accent);
+    } else {
+        p.circle_stroke(rect.center(), 8.0, Stroke::new(1.5, if resp.hovered() { accent } else { ui.visuals().weak_text_color() }));
+    }
+    let resp = if on { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Mandar aquí")) };
+    resp.clicked() && !on
+}
+
+/// Cells for a row that has no route to pick (inputs and apps recording).
+fn blank_cells(ui: &mut egui::Ui, card: Color32, n: usize) {
+    for _ in 0..n {
+        let (rect, _) = ui.allocate_exact_size(vec2(COL_W, row_height(ui)), Sense::hover());
+        ui.painter().rect_filled(rect, 14, card.gamma_multiply(0.45));
+    }
 }
 
 /// A Nerd Font glyph for well-known apps, else a generic one by kind.
