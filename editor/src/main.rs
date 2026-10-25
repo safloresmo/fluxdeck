@@ -1507,7 +1507,9 @@ impl App {
                 for r in 0..rows {
                     ui.horizontal(|ui| {
                         for c in 0..cols {
-                            self.slot(ui, Sel::Key(r * cols + c), Vec2::splat(k), 16, accent);
+                            if let Some((rect, radius, stroke, _)) = self.slot(ui, Sel::Key(r * cols + c), Vec2::splat(k), 16, accent) {
+                                ui.painter().rect_stroke(rect, radius, stroke, StrokeKind::Outside);
+                            }
                         }
                     });
                 }
@@ -1516,8 +1518,11 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    for i in 0..dials {
-                        self.slot(ui, Sel::Dial(i), seg, 4, accent);
+                    let mut outlines: Vec<_> = (0..dials).filter_map(|i| self.slot(ui, Sel::Dial(i), seg, 4, accent)).collect();
+                    // The chosen one last, so no neighbour covers its border.
+                    outlines.sort_by_key(|o| o.3);
+                    for (rect, radius, stroke, _) in outlines {
+                        ui.painter().rect_stroke(rect, radius, stroke, StrokeKind::Outside);
                     }
                 });
                 ui.horizontal(|ui| {
@@ -1569,8 +1574,10 @@ impl App {
         }
     }
 
-    fn slot(&mut self, ui: &mut egui::Ui, sel: Sel, size: Vec2, radius: u8, accent: Color32) {
-        let Some(id) = self.textures.get(&sel).map(|t| t.id()) else { return };
+    /// Draws a key or dial place and returns its outline (rect, corner radius, stroke, selected) for
+    /// the caller to paint: dial places touch, so their outlines go on top once all are drawn.
+    fn slot(&mut self, ui: &mut egui::Ui, sel: Sel, size: Vec2, radius: u8, accent: Color32) -> Option<(egui::Rect, u8, Stroke, bool)> {
+        let id = self.textures.get(&sel).map(|t| t.id())?;
         let resp = ui.add(egui::Image::new(egui::load::SizedTexture::new(id, size)).corner_radius(radius).sense(Sense::click_and_drag()));
         let filled = match sel {
             Sel::Key(i) => self.cfg.pages[self.page].key(i).is_some(),
@@ -1594,7 +1601,7 @@ impl App {
         } else {
             Stroke::new(1.5 * hover, mix(Color32::from_gray(60), accent, 0.5))
         };
-        ui.painter().rect_stroke(resp.rect.expand(3.0), radius + 3, stroke, StrokeKind::Outside);
+        let outline = (resp.rect.expand(3.0), radius + 3, stroke, self.sel == Some(sel) || hovering_drop);
         if resp.clicked() || resp.secondary_clicked() {
             self.sel = Some(sel);
         }
@@ -1616,6 +1623,7 @@ impl App {
         if let Some(a) = act {
             self.slot_act(sel, a);
         }
+        Some(outline)
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
