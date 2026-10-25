@@ -693,7 +693,8 @@ impl App {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.add_space(6.0);
-            if !matches!(self.view, View::Deck | View::Home | View::Settings | View::Profiles) {
+            // Every page names itself here; the deck shows its page tabs instead.
+            if self.view != View::Deck {
                 let title = self.nav().into_iter().find(|(v, _, _)| *v == self.view).map(|(_, _, n)| n).unwrap_or_default();
                 ui.label(RichText::new(title).size(17.0).strong());
             }
@@ -998,7 +999,6 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(24.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(t("Perfiles")).size(26.0).strong());
                 ui.label(RichText::new(t("Cambian solos cuando usas ciertas apps: la página del deck, el volumen de tus grupos o un comando. Al salir, todo vuelve como estaba.")).weak().size(13.0));
             });
         });
@@ -1697,8 +1697,6 @@ impl App {
                 ui.add_space(24.0);
                 ui.vertical(|ui| {
                     ui.set_max_width(760.0);
-                    ui.label(RichText::new(t("Ajustes")).size(26.0).strong());
-                    ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         for (i, name) in [t("General"), t("Apariencia"), t("Extensiones")].into_iter().enumerate() {
                             if ui.selectable_label(self.settings_tab == i, RichText::new(name).size(15.0)).clicked() {

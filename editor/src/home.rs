@@ -121,7 +121,6 @@ impl Home {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(t("Inicio")).size(26.0).strong());
                     let (mark, text, color) = if alerts.is_empty() {
                         ("\u{f05e0}", t("Todo en orden").to_string(), accent)
                     } else {
