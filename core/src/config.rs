@@ -30,6 +30,9 @@ pub struct Config {
     /// Audio devices left out of the mixer's menus, by node name.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hidden_devices: Vec<String>,
+    /// Short names for audio outputs, by node name ("Audífonos" for a long device name).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub output_names: std::collections::BTreeMap<String, String>,
     /// Installed plugins that are switched off, by uuid.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub disabled_plugins: Vec<String>,
@@ -156,6 +159,7 @@ impl Default for Config {
             ui_scale: 1.0,
             disabled_plugins: Vec::new(),
             hidden_devices: Vec::new(),
+            output_names: Default::default(),
             groups: Vec::new(),
             profiles: Vec::new(),
             extra_keys: Default::default(),

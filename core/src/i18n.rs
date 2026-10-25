@@ -401,6 +401,8 @@ const EN: &[(&str, &str)] = &[
     ("Ninguna app está sonando.", "No app is playing."),
     ("Canales", "Channels"),
     ("Integraciones", "Integrations"),
+    ("Nombre corto", "Short name"),
+    ("{} · clic para ponerle un nombre corto", "{} · click to give it a short name"),
     ("Pulsa «Dar permiso» para controlar esto", "Press “Grant access” to control this"),
     ("Para 48 V y Baja Z, FluxDeck necesita permiso para hablar con el Dock. Darlo no cambia los 48 V.", "For 48 V and Low Z, FluxDeck needs access to the Dock. Granting it does not change 48 V."),
     ("Esperando tu contraseña…", "Waiting for your password…"),

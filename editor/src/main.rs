@@ -2192,7 +2192,7 @@ impl eframe::App for App {
                     }
                 });
                 if self.audio_tab == 0 {
-                    if let Some(mixer::Go::Effects) = self.mixer.ui(ui, card, accent, &mut self.cfg.hidden_devices, &self.cfg.groups.clone()) {
+                    if let Some(mixer::Go::Effects) = self.mixer.ui(ui, card, accent, &mut self.cfg.hidden_devices, &mut self.cfg.output_names, &self.cfg.groups.clone()) {
                         self.audio_tab = 1;
                     }
                 } else if self.audio_tab == 1 {
