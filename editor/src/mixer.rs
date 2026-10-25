@@ -4,6 +4,7 @@ use fluxdeck_core::i18n::{t, tf};
 use fluxdeck_core::groups;
 use fluxdeck_core::mixer::{self, Channel, Kind, Snapshot};
 use fluxdeck_core::pw;
+use fluxdeck_core::streammix::{self, StreamMix};
 use eframe::egui::{self, Color32, RichText, Sense, Stroke, vec2};
 use std::collections::HashMap;
 use std::process::Child;
@@ -20,6 +21,7 @@ enum Op {
     Move(u32, String),
     Group(String, groups::Level, Vec<groups::Group>),
     Route(String, String, Vec<groups::Group>),
+    Stream(StreamMix),
 }
 
 impl Op {
@@ -32,6 +34,7 @@ impl Op {
             Op::Move(id, _) => format!("t{id}"),
             Op::Group(id, _, _) => format!("g{id}"),
             Op::Route(id, _, _) => format!("r{id}"),
+            Op::Stream(_) => "stream".into(),
         }
     }
 
@@ -49,6 +52,7 @@ impl Op {
                 groups::set_route(id, output);
                 groups::apply(all, &mixer::snapshot());
             }
+            Op::Stream(mix) => mix.save(),
         }
     }
 }
@@ -73,6 +77,7 @@ pub struct Mixer {
     hidden: Vec<String>,
     group_levels: std::collections::BTreeMap<String, groups::Level>,
     routes: std::collections::BTreeMap<String, String>,
+    stream: StreamMix,
     levels_read: Instant,
 }
 
@@ -116,6 +121,7 @@ impl Mixer {
             hidden: Vec::new(),
             group_levels: groups::levels(),
             routes: groups::routes(),
+            stream: StreamMix::load(),
             levels_read: Instant::now(),
         }
     }
@@ -193,6 +199,7 @@ impl Mixer {
         if self.levels_read.elapsed() > Duration::from_secs(2) && self.edited.elapsed() > Duration::from_secs(2) {
             self.group_levels = groups::levels();
             self.routes = groups::routes();
+            self.stream = StreamMix::load();
             self.levels_read = Instant::now();
         }
         let outputs: Vec<Channel> = snap.of(Kind::Output).filter(|c| !c.internal).cloned().collect();
@@ -213,7 +220,20 @@ impl Mixer {
                     ui.vertical(|ui| {
                         ui.set_width(NAME_W);
                         ui.label(RichText::new(t("Canales")).size(22.0).strong());
+                        let on = self.stream.on;
+                        let b = egui::Button::new(RichText::new(t("Mezcla para stream")).color(if on { Color32::WHITE } else { ui.visuals().text_color() })).min_size(vec2(72.0, 30.0));
+                        if ui.add(if on { b.fill(accent) } else { b })
+                            .on_hover_text(t("Crea la salida «FluxDeck Stream» para OBS, con volumen propio para el micrófono y cada grupo. Al apagarla desaparece."))
+                            .clicked()
+                        {
+                            self.stream.on = !self.stream.on;
+                            self.send(Op::Stream(self.stream.clone()));
+                        }
                     });
+                    if self.stream.on {
+                        let sink = snap.channels.iter().find(|c| c.name == streammix::SINK).cloned();
+                        self.stream_header(ui, sink.as_ref(), card, accent);
+                    }
                     for o in &columns {
                         let level = (default_out == Some(o.id)).then_some(self.shown_levels[0]);
                         self.output_header(ui, o, level, card, accent);
@@ -238,6 +258,7 @@ impl Mixer {
                             self.send(Op::Default(d.id));
                         }
                         self.channel_changes(&mic, vol, mute);
+                        self.send_cell(ui, card, accent, streammix::MIC);
                         blank_cells(ui, card, columns.len());
                         ui.end_row();
                     }
@@ -256,6 +277,7 @@ impl Mixer {
                             self.group_levels.insert(g.id.clone(), level);
                             self.send(Op::Group(g.id.clone(), level, all_groups.to_vec()));
                         }
+                        self.send_cell(ui, card, accent, &g.id);
                         let routed = self.routes.get(&g.id).and_then(|n| columns.iter().find(|c| &c.name == n)).map(|c| c.id);
                         let here = routed.or_else(|| members.first().and_then(|m| lands(m.device))).or(default_out);
                         for o in &columns {
@@ -272,6 +294,7 @@ impl Mixer {
                             ui.label(RichText::new(&c.binary).weak().size(11.5));
                         });
                         self.channel_changes(c, vol, mute);
+                        blank_cells(ui, card, self.stream.on as usize);
                         let here = lands(c.device);
                         for o in &columns {
                             if route_cell(ui, card, accent, here == Some(o.id)) {
@@ -293,7 +316,7 @@ impl Mixer {
                             self.send(Op::Move(c.id, d.name));
                         }
                         self.channel_changes(c, vol, mute);
-                        blank_cells(ui, card, columns.len());
+                        blank_cells(ui, card, columns.len() + self.stream.on as usize);
                         ui.end_row();
                     }
                 });
@@ -347,6 +370,54 @@ impl Mixer {
             let (vol, mute) = fader(ui, o.volume, o.muted, level, accent, COL_W - 24.0 - 84.0);
             self.channel_changes(o, vol, mute);
         }));
+    }
+
+    /// The stream mix's column head: its own fader, once the service has made the output.
+    fn stream_header(&mut self, ui: &mut egui::Ui, sink: Option<&Channel>, card: Color32, accent: Color32) {
+        cell_frame(card).show(ui, |ui| ui.vertical(|ui| {
+            ui.set_width(COL_W - 24.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("\u{f0003}").size(20.0).color(accent));
+                ui.label(RichText::new(t("Stream")).size(13.5).strong());
+            })
+            .response
+            .on_hover_text(t("En OBS, captura la salida «FluxDeck Stream»."));
+            match sink {
+                Some(o) => {
+                    let (vol, mute) = fader(ui, o.volume, o.muted, None, accent, COL_W - 24.0 - 84.0);
+                    self.channel_changes(o, vol, mute);
+                }
+                None if !fluxdeck_core::paths::service_running() => drop(ui.label(RichText::new(t("Necesita el servicio encendido.")).weak().size(11.5))),
+                None => drop(ui.label(RichText::new(t("Preparando la salida…")).weak().size(11.5))),
+            }
+        }));
+    }
+
+    /// How loud a channel goes into the stream; muted means it is not sent. Hidden while the mix is off.
+    fn send_cell(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32, key: &str) {
+        if !self.stream.on {
+            return;
+        }
+        let mut level = self.stream.send(key);
+        let h = row_height(ui);
+        let mut changed = false;
+        cell_frame(card).show(ui, |ui| ui.vertical(|ui| {
+            ui.set_width(COL_W - 24.0);
+            ui.set_min_height(h - 24.0);
+            ui.add_space(((h - 24.0 - 26.0) / 2.0).max(0.0));
+            let (vol, mute) = fader(ui, level.volume, level.muted, None, accent, COL_W - 24.0 - 84.0);
+            if let Some(v) = vol {
+                // Moving a send that is off turns it on.
+                (level.volume, level.muted, changed) = (v, false, true);
+            }
+            if mute {
+                (level.muted, changed) = (!level.muted, true);
+            }
+        }));
+        if changed {
+            self.stream.sends.insert(key.to_string(), level);
+            self.send(Op::Stream(self.stream.clone()));
+        }
     }
 
     /// A device picker that can hide devices from itself; returns the one picked.

@@ -123,7 +123,8 @@ pub fn parse(all: &[Value]) -> Snapshot {
             volume: linear.max(0.0).cbrt() as f32,
             muted: props["mute"].as_bool().unwrap_or(false),
             device: device.map(|d| d as u32),
-            internal: kind == Kind::Output && p["node.link-group"].is_string(),
+            // The stream mix's own output gets its own column, not a place among the devices.
+            internal: kind == Kind::Output && (p["node.link-group"].is_string() || p["node.name"] == crate::streammix::SINK),
         });
     }
     snap.channels.sort_by_key(|c| (c.kind as u8, c.label.to_lowercase()));

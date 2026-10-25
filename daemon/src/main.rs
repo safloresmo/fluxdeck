@@ -8,6 +8,7 @@ mod plugincmd;
 mod plugins;
 mod profilesrun;
 mod pwcmd;
+mod streamrun;
 mod tray;
 mod xlr;
 
@@ -100,6 +101,7 @@ fn daemon() {
     let _watcher = watch(tx.clone());
     effectsrun::start();
     groupsrun::start();
+    streamrun::start();
     profilesrun::start(tx.clone());
     extrakeys::start(tx.clone());
     tray::start(tx.clone());

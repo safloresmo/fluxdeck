@@ -13,6 +13,7 @@ pub mod profiles;
 pub mod pw;
 pub mod render;
 pub mod state;
+pub mod streammix;
 
 pub use config::{Config, Dial, Key, Page, Step, Theme};
 pub use image;
