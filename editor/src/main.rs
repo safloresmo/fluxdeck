@@ -1224,7 +1224,7 @@ impl App {
                         self.cfg.groups.remove(gi);
                     }
                     if ui.button(t("+ Nuevo grupo")).clicked() {
-                        let id = fluxdeck_core::groups::new_id(&self.cfg.groups, &t("Nuevo grupo").to_string());
+                        let id = fluxdeck_core::groups::new_id(&self.cfg.groups, t("Nuevo grupo"));
                         self.cfg.groups.push(fluxdeck_core::groups::Group { id, name: t("Nuevo grupo").into(), icon: "\u{f075a}".into(), apps: vec![] });
                     }
                     ui.add_space(6.0);

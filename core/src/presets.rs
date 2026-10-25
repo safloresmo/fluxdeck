@@ -411,6 +411,15 @@ pub fn all(env: &Env) -> Vec<Preset> {
     out
 }
 
+/// "VIRTUOSO MAX" → "Virtuoso Max", keeping model codes such as K100 as they are.
+pub fn title(product: &str) -> String {
+    product
+        .split_whitespace()
+        .map(|w| if w.chars().any(|c| c.is_ascii_digit()) || w.len() <= 3 { w.to_string() } else { w[..1].to_string() + &w[1..].to_lowercase() })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -419,13 +428,4 @@ mod tests {
         assert_eq!(super::app_of(&super::app_key("it's").status).as_deref(), Some("its"));
         assert_eq!(super::app_of("date"), None);
     }
-}
-
-/// "VIRTUOSO MAX" → "Virtuoso Max", keeping model codes such as K100 as they are.
-pub fn title(product: &str) -> String {
-    product
-        .split_whitespace()
-        .map(|w| if w.chars().any(|c| c.is_ascii_digit()) || w.len() <= 3 { w.to_string() } else { w[..1].to_string() + &w[1..].to_lowercase() })
-        .collect::<Vec<_>>()
-        .join(" ")
 }

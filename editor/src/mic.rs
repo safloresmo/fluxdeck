@@ -576,6 +576,12 @@ fn conf_text(params: &[(String, f64)]) -> String {
     out.trim_start().to_string()
 }
 
+impl Drop for Mic {
+    fn drop(&mut self) {
+        self.listen(false);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,11 +593,5 @@ mod tests {
         assert!(describe("graves", "Gain").is_some());
         let text = conf_text(&[("graves:Gain".into(), 4.5), ("graves:b0".into(), 1.0), ("compresor:Ratio (1:n)".into(), 3.0)]);
         assert_eq!(text, "# graves\n\"Gain\" = 4.5\n\n# compresor\n\"Ratio (1:n)\" = 3\n");
-    }
-}
-
-impl Drop for Mic {
-    fn drop(&mut self) {
-        self.listen(false);
     }
 }

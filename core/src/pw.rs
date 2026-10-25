@@ -100,7 +100,7 @@ fn meter_with(node: &str, output: bool, mut f: impl FnMut(f32) -> bool + Send + 
     std::thread::spawn(move || {
         let mut buf = [0u8; 1600];
         while out.read_exact(&mut buf).is_ok() {
-            let peak = buf.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs()).max().unwrap_or(0);
+            let peak = buf.as_chunks::<2>().0.iter().map(|s| i16::from_le_bytes(*s).unsigned_abs()).max().unwrap_or(0);
             let db = 20.0 * (peak.max(1) as f32 / 32768.0).log10();
             if !f(((db + 60.0) / 60.0).clamp(0.0, 1.0)) {
                 break;

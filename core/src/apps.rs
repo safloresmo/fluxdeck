@@ -83,9 +83,8 @@ pub fn command(exec: &str) -> String {
     let mut chars = exec.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '%' {
-            match chars.next() {
-                Some('%') => out.push('%'),
-                _ => {}
+            if chars.next() == Some('%') {
+                out.push('%');
             }
         } else {
             out.push(c);
