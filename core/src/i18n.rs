@@ -401,6 +401,8 @@ const EN: &[(&str, &str)] = &[
     ("Ninguna app está sonando.", "No app is playing."),
     ("Canales", "Channels"),
     ("Integraciones", "Integrations"),
+    ("Buscar fuente…", "Search fonts…"),
+    ("Colores del escritorio (Ryoku)", "Desktop colours (Ryoku)"),
     ("¿Quitar el grupo?", "Remove the group?"),
     ("¿Borrar la página?", "Delete the page?"),
     ("+ App que suena", "+ Playing app"),

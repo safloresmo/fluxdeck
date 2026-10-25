@@ -120,6 +120,9 @@ struct App {
     audio_tab: usize,
     settings_tab: usize,
     startup: fluxdeck_core::paths::Startup,
+    /// Installed font families, read when the font menu is first shown, and its search text.
+    font_families: Option<Vec<String>>,
+    font_query: String,
     /// The FluxDeck widget for a Ryoku bar, read when the settings tab opens.
     ryoku_widget: Option<fluxdeck_core::ryoku::Widget>,
     zoom: f32,
@@ -219,6 +222,8 @@ impl App {
             // `--settings 2` opens a given tab.
             settings_tab: std::env::args().nth(2).and_then(|a| a.parse().ok()).unwrap_or(0),
             startup: fluxdeck_core::paths::startup(),
+            font_families: None,
+            font_query: String::new(),
             ryoku_widget: None,
             zoom: 0.0,
             apps_now: (Vec::new(), Instant::now() - Duration::from_secs(10)),
@@ -1763,7 +1768,17 @@ impl App {
             });
         });
         setting(ui, card, t("Fuente de las teclas"), t("Una familia instalada; los íconos salen de cualquier Nerd Font"), |ui| {
-            ui.add(TextEdit::singleline(&mut self.cfg.font).hint_text("sans-serif").desired_width(200.0));
+            let families = self.font_families.get_or_insert_with(font_families);
+            let shown = if self.cfg.font.is_empty() { "sans-serif".to_string() } else { self.cfg.font.clone() };
+            egui::ComboBox::from_id_salt("key-font").selected_text(shown).width(220.0).height(360.0).show_ui(ui, |ui| {
+                ui.add(TextEdit::singleline(&mut self.font_query).hint_text(t("Buscar fuente…")).desired_width(200.0));
+                let q = self.font_query.to_lowercase();
+                for f in std::iter::once("sans-serif").chain(families.iter().map(String::as_str)).filter(|f| q.is_empty() || f.to_lowercase().contains(&q)) {
+                    if ui.selectable_label(self.cfg.font == f, f).clicked() {
+                        self.cfg.font = f.to_string();
+                    }
+                }
+            });
         });
         ui.add_space(10.0);
         ui.label(RichText::new(tf("FluxDeck {}", &[env!("CARGO_PKG_VERSION")])).weak().size(12.5));
@@ -1814,7 +1829,9 @@ impl App {
             self.theme = self.cfg.effective_theme();
         }
         if mode == 0 && picked.is_none() {
-            ui.label(RichText::new(tf("Paleta: {}", &[&self.cfg.palette])).weak().monospace().size(12.0));
+            // A palette from the desktop is named after it; only a file of the user's own shows its path.
+            let source = if self.cfg.palette.contains("/ryoku/") { t("Colores del escritorio (Ryoku)").to_string() } else { tf("Paleta: {}", &[&self.cfg.palette]) };
+            ui.label(RichText::new(source).weak().size(12.5)).on_hover_text(&self.cfg.palette);
             ui.label(RichText::new(t("Cambian solos cuando cambias el fondo de pantalla.")).weak().size(12.5));
         } else if mode != 0 {
             let mut changed = false;
@@ -2308,6 +2325,16 @@ fn setting(ui: &mut egui::Ui, card: Color32, title: &str, about: &str, control: 
 }
 
 /// An on/off switch; true when flipped.
+/// Font families fontconfig knows, each once, sorted.
+fn font_families() -> Vec<String> {
+    let out = std::process::Command::new("fc-list").args([":", "family"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    // A line can list several names for one family ("Noto Sans,Noto Sans Regular"): the first is enough.
+    let mut all: Vec<String> = out.lines().filter_map(|l| l.split(',').next()).map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+    all.sort_by_key(|f| f.to_lowercase());
+    all.dedup();
+    all
+}
+
 /// A button that acts on a second click within four seconds; the first click only asks.
 fn confirm_button(ui: &mut egui::Ui, enabled: bool, label: &str, ask: &str, salt: impl std::hash::Hash + std::fmt::Debug) -> bool {
     let id = Id::unique(("confirm", salt));
