@@ -9,8 +9,11 @@ use std::time::{Duration, SystemTime};
 
 const OPENACTION: &str = "https://openactionapi.github.io/plugins/catalogue.json";
 const OPENACTION_ICONS: &str = "https://openactionapi.github.io/plugins/icons/";
-const ELGATO: &str = "https://plugins.amankhanna.me/catalogue.json";
+/// The full archive of Elgato's old store: descriptions and websites come from here. Elgato's own
+/// icon links are dead, so icons come from the archive's copies.
+const ELGATO: &str = "https://plugins.amankhanna.me/catalogue_raw.json";
 const ELGATO_ZIPS: &str = "https://plugins.amankhanna.me/rezipped/";
+const ELGATO_ICONS: &str = "https://plugins.amankhanna.me/icons/";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Source {
@@ -81,24 +84,37 @@ pub fn load(source: Source) -> Result<Vec<Entry>, String> {
                 .collect()
         }
         Source::Elgato => {
-            let v = fetch_json(ELGATO, "elgato.json", day).ok_or_else(|| t("No se pudo descargar el catálogo.").to_string())?;
-            v.as_array()
-                .into_iter()
-                .flatten()
-                .map(|p| Entry {
-                    id: s(p, "id"),
-                    name: s(p, "name"),
-                    author: s(p, "author"),
-                    description: String::new(),
-                    repository: String::new(),
-                    download: format!("{ELGATO_ZIPS}{}.zip", s(p, "id")),
-                    icon: s(p, "icon"),
-                })
-                .collect()
+            let v = fetch_json(ELGATO, "elgato-full.json", day).ok_or_else(|| t("No se pudo descargar el catálogo.").to_string())?;
+            elgato_entries(&v)
         }
     };
     out.sort_by_key(|e| (!e.made_for_linux(), e.name.to_lowercase()));
     Ok(out)
+}
+
+/// Entries of the Elgato archive, described by their newest published version.
+fn elgato_entries(v: &Value) -> Vec<Entry> {
+    let s = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().trim().to_string();
+    v["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["invisible"] != true)
+        .map(|p| {
+            let id = s(p, "identifier");
+            let newest = p["published_versions"].as_array().and_then(|v| v.last()).cloned().unwrap_or_default();
+            let subtitle = s(&newest, "subtitle");
+            Entry {
+                name: s(p, "name"),
+                author: s(&p["author"], "name"),
+                description: if subtitle.is_empty() { s(&newest, "description") } else { subtitle },
+                repository: s(p, "website"),
+                download: format!("{ELGATO_ZIPS}{id}.zip"),
+                icon: format!("{ELGATO_ICONS}{id}.png"),
+                id,
+            }
+        })
+        .collect()
 }
 
 /// The release file to download: a direct link, or the best asset of the repository's latest GitHub release.
@@ -165,3 +181,22 @@ fn find_plugin(dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.path().is_dir()).find_map(|e| find_plugin(&e.path()))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn elgato_entries_take_the_newest_version() {
+        let v = json!({ "entries": [
+            { "identifier": "com.a.b", "name": "B", "author": { "name": "A" }, "website": "https://a.example/",
+              "published_versions": [{ "subtitle": "old" }, { "subtitle": "", "description": "New one" }] },
+            { "identifier": "com.hidden", "name": "H", "invisible": true, "published_versions": [] }
+        ]});
+        let e = elgato_entries(&v);
+        assert_eq!(e.len(), 1, "invisible entries are left out");
+        assert_eq!((e[0].author.as_str(), e[0].description.as_str(), e[0].repository.as_str()), ("A", "New one", "https://a.example/"));
+        assert!(e[0].icon.ends_with("/icons/com.a.b.png") && e[0].download.ends_with("/rezipped/com.a.b.zip"));
+    }
+}
