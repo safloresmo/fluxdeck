@@ -943,6 +943,42 @@ impl App {
     }
 
     /// Perfiles: a list on the left, the chosen profile on the right.
+    /// With no profile yet: what one does, shown with an example, and the two ways to start.
+    fn profiles_empty(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            egui::Frame::new().fill(card).corner_radius(18).inner_margin(28).show(ui, |ui| {
+                ui.set_width(560.0);
+                ui.label(RichText::new("\u{f0297}").size(40.0).color(accent));
+                ui.add_space(6.0);
+                ui.label(RichText::new(t("Que todo cambie según la app que uses")).size(19.0).strong());
+                ui.add_space(10.0);
+                for (step, text) in [
+                    ("1", t("Abres Steam o un juego.")),
+                    ("2", t("El Chat sube al 100 % y la Música baja al 40 %; si quieres, también el deck cambia de página.")),
+                    ("3", t("Cierras el juego y todo vuelve como estaba.")),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(step).size(13.0).strong().color(accent));
+                        ui.label(RichText::new(text).size(13.5));
+                    });
+                }
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    let first = egui::Button::new(RichText::new(t("Crear perfil de juegos")).color(mic::ink(accent))).fill(accent).min_size(vec2(0.0, 32.0));
+                    if ui.add(first).clicked() {
+                        self.cfg.profiles.push(fluxdeck_core::profiles::starter());
+                        self.profile_sel = 0;
+                    }
+                    if ui.add(egui::Button::new(t("Empezar de cero")).min_size(vec2(0.0, 32.0))).clicked() {
+                        self.cfg.profiles.push(fluxdeck_core::profiles::Profile { id: "perfil".into(), name: t("Nuevo perfil").into(), ..Default::default() });
+                        self.profile_sel = 0;
+                    }
+                });
+            });
+        });
+    }
+
     fn profiles_page(&mut self, ui: &mut egui::Ui) {
         let card = ui.visuals().faint_bg_color;
         let accent = self.accent();
@@ -959,6 +995,10 @@ impl App {
             });
         });
         ui.add_space(14.0);
+        if self.cfg.profiles.is_empty() {
+            self.profiles_empty(ui, card, accent);
+            return;
+        }
         ui.horizontal_top(|ui| {
             ui.add_space(24.0);
             // The list.
@@ -1000,10 +1040,6 @@ impl App {
             });
             ui.add_space(16.0);
             // The chosen profile.
-            if self.cfg.profiles.is_empty() {
-                ui.label(RichText::new(t("Todavía no tienes perfiles.")).weak());
-                return;
-            }
             self.profile_sel = self.profile_sel.min(self.cfg.profiles.len() - 1);
             let i = self.profile_sel;
             egui::ScrollArea::vertical().id_salt("profile").show(ui, |ui| {
