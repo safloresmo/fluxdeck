@@ -39,7 +39,8 @@ fi
 if [[ "${1:-}" == "--udev" ]]; then
     sudo install -Dm644 "dist/70-$name.rules" "/etc/udev/rules.d/70-$name.rules"
     sudo udevadm control --reload
-    sudo udevadm trigger --action=add --subsystem-match=hidraw --subsystem-match=usb
+    sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=0fd9
+    sudo udevadm trigger --action=add --subsystem-match=hidraw
 fi
 
 echo "Listo: FluxDeck está actualizado y el editor está en el menú de apps. Cómo arranca se elige en Ajustes → General."

@@ -77,6 +77,8 @@ pub struct Mic {
     any_mic: bool,
     /// The loopback that lets you hear yourself.
     monitor: Option<Child>,
+    /// When 48 V was asked for once; a second click soon after turns it on.
+    phantom_armed: Option<Instant>,
     pub notice: String,
 }
 
@@ -157,6 +159,7 @@ impl Mic {
             effects: EffectsEditor::load(),
             any_mic: !effects::microphones().is_empty(),
             monitor: None,
+            phantom_armed: None,
             notice: String::new(),
         }
     }
@@ -328,10 +331,20 @@ impl Mic {
                 self.shown.gain = Some((db, !on));
                 self.send(Write::Amixer("Mic", if on { "nocap" } else { "cap" }.into()));
             }
+            // 48 V only suits condenser mics, so turning it on takes a second click; off is immediate.
+            let armed = self.phantom_armed.is_some_and(|at| at.elapsed() < Duration::from_secs(4));
+            if armed {
+                ui.ctx().request_repaint_after(Duration::from_millis(500));
+            }
             match self.shown.phantom {
-                Some(p) if toggle(ui, p, "48 V", Color32::from_rgb(138, 90, 0)) => {
-                    self.shown.phantom = Some(!p);
-                    self.send(Write::Xlr("phantom", !p));
+                Some(p) if toggle(ui, p || armed, if armed { t("¿Encender 48 V?") } else { "48 V" }, Color32::from_rgb(138, 90, 0)) => {
+                    if p || armed {
+                        self.phantom_armed = None;
+                        self.shown.phantom = Some(!p);
+                        self.send(Write::Xlr("phantom", !p));
+                    } else {
+                        self.phantom_armed = Some(Instant::now());
+                    }
                 }
                 None => drop(ui.add_enabled(false, egui::Button::new("48 V")).on_disabled_hover_text(t(NO_USB))),
                 _ => {}

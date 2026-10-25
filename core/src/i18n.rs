@@ -401,6 +401,7 @@ const EN: &[(&str, &str)] = &[
     ("Ninguna app está sonando.", "No app is playing."),
     ("Canales", "Channels"),
     ("Integraciones", "Integrations"),
+    ("¿Encender 48 V?", "Turn on 48 V?"),
     ("Widget en la barra de Ryoku", "Widget on the Ryoku bar"),
     ("El micrófono, tus grupos y la mezcla para stream en la barra. Apagarlo solo lo oculta", "The microphone, your groups and the stream mix on the bar. Turning it off only hides it"),
     ("Ryoku no respondió; prueba en QS Bar Settings → Widgets", "Ryoku did not answer; try QS Bar Settings → Widgets"),
