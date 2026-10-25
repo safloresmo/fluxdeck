@@ -1225,7 +1225,7 @@ impl App {
                                 });
                                 ui.add(TextEdit::singleline(&mut g.name).desired_width(220.0).font(egui::TextStyle::Heading));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.button(t("Quitar grupo")).clicked() {
+                                    if confirm_button(ui, true, t("Quitar grupo"), t("¿Quitar el grupo?"), ("group", &g.id)) {
                                         remove = Some(gi);
                                     }
                                 });
@@ -1254,7 +1254,7 @@ impl App {
                                 if (ui.button(t("Agregar")).clicked() || entered) && !text.trim().is_empty() {
                                     add = Some(std::mem::take(text).trim().to_string());
                                 }
-                                egui::ComboBox::from_id_salt(("gnow", &id)).selected_text(t("Sonando")).show_ui(ui, |ui| {
+                                egui::ComboBox::from_id_salt(("gnow", &id)).selected_text(t("+ App que suena")).show_ui(ui, |ui| {
                                     if self.apps_now.0.is_empty() {
                                         ui.label(RichText::new(t("Ninguna app está sonando.")).weak());
                                     }
@@ -1347,7 +1347,7 @@ impl App {
             if ui.add(TextEdit::singleline(&mut text).hint_text("Spotify").desired_width(170.0)).on_hover_text(t("Escribe el nombre si no está sonando")).changed() {
                 out = Some(text.clone());
             }
-            egui::ComboBox::from_id_salt("apps_now").selected_text(t("Sonando")).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("apps_now").selected_text(t("+ App que suena")).show_ui(ui, |ui| {
                 if self.apps_now.0.is_empty() {
                     ui.label(RichText::new(t("Ninguna app está sonando.")).weak());
                 }
@@ -1649,7 +1649,10 @@ impl App {
             }
         });
         let only = self.cfg.pages.len() == 1;
-        if ui.add_enabled(!only, egui::Button::new(t("Borrar página"))).on_disabled_hover_text(t("Tiene que quedar al menos una")).clicked() {
+        let name = self.cfg.pages[self.page].name.clone();
+        if only {
+            ui.add_enabled(false, egui::Button::new(t("Borrar página"))).on_disabled_hover_text(t("Tiene que quedar al menos una"));
+        } else if confirm_button(ui, true, t("Borrar página"), t("¿Borrar la página?"), ("page", &name)) {
             let gone = self.cfg.pages.remove(self.page).name;
             for k in self.cfg.pages.iter_mut().flat_map(|p| p.keys.iter_mut()).filter(|k| k.page == gone) {
                 k.page.clear();
@@ -2305,6 +2308,26 @@ fn setting(ui: &mut egui::Ui, card: Color32, title: &str, about: &str, control: 
 }
 
 /// An on/off switch; true when flipped.
+/// A button that acts on a second click within four seconds; the first click only asks.
+fn confirm_button(ui: &mut egui::Ui, enabled: bool, label: &str, ask: &str, salt: impl std::hash::Hash + std::fmt::Debug) -> bool {
+    let id = Id::unique(("confirm", salt));
+    let now = ui.input(|i| i.time);
+    let armed = ui.ctx().data(|d| d.get_temp::<f64>(id)).is_some_and(|at| now - at < 4.0);
+    if armed {
+        ui.ctx().request_repaint_after(Duration::from_millis(500));
+    }
+    let text = if armed { RichText::new(ask).color(Color32::from_rgb(229, 72, 77)) } else { RichText::new(label) };
+    if !ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
+        return false;
+    }
+    if armed {
+        ui.ctx().data_mut(|d| d.remove::<f64>(id));
+        return true;
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(id, now));
+    false
+}
+
 pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(42.0, 24.0), Sense::click());
     if resp.clicked() {
