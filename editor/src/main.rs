@@ -2251,19 +2251,31 @@ const ACCENTS: [&str; 8] = ["#9b8cff", "#7aa2f7", "#4fb3a9", "#6cc070", "#e5a04a
 fn setting(ui: &mut egui::Ui, card: Color32, title: &str, about: &str, control: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().fill(card).corner_radius(14).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.set_max_width(320.0);
-                ui.label(RichText::new(title).size(14.5));
-                if !about.is_empty() {
-                    ui.label(RichText::new(about).weak().size(12.5));
-                }
-            });
-            // Right-aligned, but the controls keep their reading order.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.horizontal(control);
-            });
-        });
+        // Controls that would not fit beside the text go under it; their width is known from the last frame.
+        let id = Id::unique(("setting", title));
+        let wide: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
+        let text = |ui: &mut egui::Ui| {
+            ui.label(RichText::new(title).size(14.5));
+            if !about.is_empty() {
+                ui.label(RichText::new(about).weak().size(12.5));
+            }
+        };
+        let width = if wide + 340.0 > ui.available_width() {
+            text(ui);
+            ui.add_space(4.0);
+            ui.horizontal(control).response.rect.width()
+        } else {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_max_width(320.0);
+                    text(ui);
+                });
+                // Right-aligned, but the controls keep their reading order.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.horizontal(control).response.rect.width()).inner
+            })
+            .inner
+        };
+        ui.ctx().data_mut(|d| d.insert_temp(id, width));
     });
     ui.add_space(8.0);
 }
