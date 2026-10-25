@@ -79,6 +79,9 @@ pub struct Mic {
     monitor: Option<Child>,
     /// When 48 V was asked for once; a second click soon after turns it on.
     phantom_armed: Option<Instant>,
+    /// Installing the udev rule through pkexec, which waits for the password; and whether it failed.
+    grant: Option<std::thread::JoinHandle<bool>>,
+    grant_failed: bool,
     pub notice: String,
 }
 
@@ -160,6 +163,8 @@ impl Mic {
             any_mic: !effects::microphones().is_empty(),
             monitor: None,
             phantom_armed: None,
+            grant: None,
+            grant_failed: false,
             notice: String::new(),
         }
     }
@@ -310,6 +315,34 @@ impl Mic {
         });
     }
 
+    /// Without the udev rule the Dock's USB controls are out of reach; offer to install it.
+    fn grant_ui(&mut self, ui: &mut egui::Ui) {
+        if self.grant.as_ref().is_some_and(|h| h.is_finished()) {
+            self.grant_failed = !self.grant.take().is_some_and(|h| h.join().unwrap_or(false));
+        }
+        let busy = self.grant.is_some();
+        if busy {
+            ui.ctx().request_repaint_after(Duration::from_millis(400));
+        }
+        ui.label(RichText::new(t("Para 48 V y Baja Z, FluxDeck necesita permiso para hablar con el Dock. Darlo no cambia los 48 V.")).weak().size(12.5));
+        ui.horizontal(|ui| {
+            let label = if busy { t("Esperando tu contraseña…") } else { t("Dar permiso") };
+            if ui.add_enabled(!busy, egui::Button::new(label)).on_hover_text(t("Pide tu contraseña una vez e instala la regla udev de FluxDeck")).clicked() {
+                self.grant_failed = false;
+                self.grant = Some(std::thread::spawn(grant_access));
+            }
+            if self.grant_failed && ui.button(t("Copiar comando")).on_hover_text(t("Pégalo en una terminal")).clicked() {
+                // The rule file has to exist for the copied command too.
+                let _ = std::fs::write(rule_path(), include_str!("../../dist/70-fluxdeck.rules"));
+                ui.ctx().copy_text(grant_command());
+                self.notice = t("Comando copiado: pégalo en una terminal").into();
+            }
+        });
+        if self.grant_failed {
+            ui.label(RichText::new(t("No se pudo pedir la contraseña desde aquí. Copia el comando y pégalo en una terminal.")).weak().size(12.5));
+        }
+    }
+
     fn dock_ui(&mut self, ui: &mut egui::Ui, accent: Color32) {
         ui.label(RichText::new("XLR Dock").size(18.0).strong());
         ui.add_space(8.0);
@@ -359,7 +392,7 @@ impl Mic {
             }
         });
         if self.shown.phantom.is_none() {
-            ui.label(RichText::new(t("48 V y Baja Z necesitan la regla udev de dist/.")).weak().size(12.5));
+            self.grant_ui(ui);
         }
         ui.add_space(14.0);
         if let Some((mut db, on)) = self.shown.phones {
@@ -496,7 +529,27 @@ impl Mic {
     }
 }
 
-const NO_USB: &str = "Instala dist/70-fluxdeck.rules para controlar esto";
+const NO_USB: &str = "Pulsa «Dar permiso» para controlar esto";
+
+/// Puts FluxDeck's udev rule in place and makes the Dock re-read it, asking for the password once.
+const GRANT: &str = "install -Dm644 \"$1\" /etc/udev/rules.d/70-fluxdeck.rules && udevadm control --reload && udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=0fd9";
+
+/// The same as a command to paste in a terminal, for desktops without a polkit agent.
+fn grant_command() -> String {
+    format!("sudo sh -c '{}' sh {}", GRANT, rule_path().display())
+}
+
+fn rule_path() -> std::path::PathBuf {
+    fluxdeck_core::paths::runtime("70-fluxdeck.rules")
+}
+
+/// Runs the rule install through pkexec. It touches no Dock setting: 48 V stays as it is.
+fn grant_access() -> bool {
+    if std::fs::write(rule_path(), include_str!("../../dist/70-fluxdeck.rules")).is_err() {
+        return false;
+    }
+    Command::new("pkexec").args(["sh", "-c", GRANT, "sh"]).arg(rule_path()).stdin(Stdio::null()).status().is_ok_and(|s| s.success())
+}
 
 
 pub fn card_frame(fill: Color32) -> egui::Frame {
