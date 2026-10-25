@@ -118,6 +118,8 @@ struct App {
     audio_tab: usize,
     settings_tab: usize,
     startup: fluxdeck_core::paths::Startup,
+    /// The FluxDeck widget for a Ryoku bar, read when the settings tab opens.
+    ryoku_widget: Option<fluxdeck_core::ryoku::Widget>,
     zoom: f32,
     /// Apps playing, for the app picker, and when that was read.
     apps_now: (Vec<String>, Instant),
@@ -214,6 +216,7 @@ impl App {
             // `--settings 2` opens a given tab.
             settings_tab: std::env::args().nth(2).and_then(|a| a.parse().ok()).unwrap_or(0),
             startup: fluxdeck_core::paths::startup(),
+            ryoku_widget: None,
             zoom: 0.0,
             apps_now: (Vec::new(), Instant::now() - Duration::from_secs(10)),
             new_app: HashMap::new(),
@@ -1644,6 +1647,7 @@ impl App {
                         for (i, name) in [t("General"), t("Apariencia"), t("Extensiones")].into_iter().enumerate() {
                             if ui.selectable_label(self.settings_tab == i, RichText::new(name).size(15.0)).clicked() {
                                 self.settings_tab = i;
+                                self.ryoku_widget = None;
                             }
                         }
                     });
@@ -1807,6 +1811,45 @@ impl App {
         });
         if corsair && !self.devices.running {
             ui.label(RichText::new(t("OpenLinkHub no está corriendo. Instálalo y arráncalo: github.com/jurkovic-nikola/OpenLinkHub")).weak().size(12.5));
+        }
+        // Only on a Ryoku desktop; elsewhere there is nothing to integrate with.
+        if fluxdeck_core::paths::ryoku_desktop() {
+            ui.add_space(14.0);
+            ui.label(RichText::new(t("Integraciones")).size(16.0).strong());
+            ui.add_space(6.0);
+            use fluxdeck_core::ryoku;
+            let w = self.ryoku_widget.get_or_insert_with(ryoku::Widget::read).clone();
+            let about = match (&w.installed, &w.shipped) {
+                (Some(_), _) if w.outdated() => t("Hay una versión nueva del widget"),
+                (Some(_), _) => t("El micrófono, tus grupos y la mezcla para stream en la barra. Apagarlo solo lo oculta"),
+                (None, Some(_)) => t("El micrófono, tus grupos y la mezcla para stream en la barra"),
+                (None, None) => t("Esta copia de FluxDeck no trae el widget; instálalo con dist/install.sh"),
+            };
+            let mut action: Option<Result<(), String>> = None;
+            setting(ui, card, t("Widget en la barra de Ryoku"), about, |ui| {
+                if w.installed.is_none() {
+                    if w.shipped.is_some() && ui.button(t("Instalar widget")).clicked() {
+                        action = Some(ryoku::install(false));
+                    }
+                    return;
+                }
+                let mut shown = w.shown.unwrap_or(false);
+                if toggle_switch(ui, &mut shown) {
+                    action = Some(if ryoku::set_bar_widget(shown) { Ok(()) } else { Err(t("Ryoku no respondió; prueba en QS Bar Settings → Widgets").into()) });
+                }
+                if w.outdated() && ui.button(t("Actualizar")).clicked() {
+                    action = Some(ryoku::install(true));
+                }
+                if ui.button(t("Quitar")).on_hover_text(t("Lo desinstala de Ryoku; puedes volver a instalarlo aquí")).clicked() {
+                    action = Some(ryoku::remove());
+                }
+            });
+            if let Some(result) = action {
+                if let Err(e) = result {
+                    self.notice = tf("Ryoku: {}", &[&e]);
+                }
+                self.ryoku_widget = None;
+            }
         }
         ui.add_space(14.0);
         ui.horizontal(|ui| {

@@ -12,6 +12,7 @@ pub mod presets;
 pub mod profiles;
 pub mod pw;
 pub mod render;
+pub mod ryoku;
 pub mod state;
 pub mod streammix;
 
