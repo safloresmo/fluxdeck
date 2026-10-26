@@ -13,6 +13,7 @@ pub mod iconify;
 pub mod presets;
 pub mod profiles;
 pub mod pw;
+pub mod remote;
 pub mod render;
 pub mod ryoku;
 pub mod state;

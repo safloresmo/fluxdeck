@@ -9,6 +9,7 @@ mod plugincmd;
 mod plugins;
 mod profilesrun;
 mod pwcmd;
+mod remote;
 mod streamrun;
 mod tray;
 mod xlr;
@@ -61,6 +62,8 @@ pub(crate) enum Msg {
     GoPage(String),
     Status { generation: u64, slot: Slot, text: String },
     Meter { generation: u64, slot: Slot, level: f32 },
+    /// A tap on the deck shown on a phone.
+    Remote(remote::Input),
 }
 
 fn main() {
@@ -102,6 +105,7 @@ fn daemon() {
     let (tx, rx) = channel();
     let _watcher = watch(tx.clone());
     effectsrun::start();
+    remote::start(tx.clone());
     groupsrun::start();
     streamrun::start();
     profilesrun::start(tx.clone());
@@ -132,13 +136,27 @@ fn daemon() {
                 match StreamDeck::connect(&hid, kind, &serial) {
                     Ok(deck) => {
                         eprintln!("fluxdeck: connected to {kind:?} ({serial})");
-                        if let Err(e) = Session::new(deck, tx.clone(), host.clone(), &serial).run(&rx) {
+                        if let Err(e) = Session::new(Some(deck), kind, tx.clone(), host.clone(), &serial).run(&rx, || false) {
                             eprintln!("fluxdeck: lost the deck: {e}");
                         }
                         State::clear();
                     }
                     Err(e) => eprintln!("fluxdeck: cannot open {kind:?}: {e} (check the udev rule)"),
                 }
+            }
+            // No hardware, but the deck on the phone is on: run the deck for it alone, shaped like a
+            // Stream Deck +, until hardware shows up or the phone deck is switched off.
+            None if fluxdeck_core::remote::enabled() => {
+                waiting = false;
+                eprintln!("fluxdeck: no Stream Deck; the deck runs for the phone");
+                let stop = || {
+                    let _ = refresh_device_list(&mut hid);
+                    !list_devices(&hid).is_empty() || !fluxdeck_core::remote::enabled()
+                };
+                if let Err(e) = Session::new(None, Kind::Plus, tx.clone(), host.clone(), "fluxdeck-phone").run(&rx, stop) {
+                    eprintln!("fluxdeck: the phone deck stopped: {e}");
+                }
+                State::clear();
             }
             None if !waiting => {
                 eprintln!("fluxdeck: waiting for a Stream Deck");
@@ -198,7 +216,8 @@ pub(crate) fn shell(cmd: &str, steps: u32) -> Command {
 }
 
 struct Session {
-    deck: Arc<StreamDeck>,
+    /// The hardware; None while the deck exists only on a phone.
+    deck: Option<Arc<StreamDeck>>,
     kind: Kind,
     tx: Sender<Msg>,
     cfg: Config,
@@ -258,14 +277,15 @@ impl Drop for Session {
 }
 
 impl Session {
-    fn new(deck: StreamDeck, tx: Sender<Msg>, host: Option<Host>, serial: &str) -> Session {
+    /// `deck` is None for the deck on a phone with no hardware; `kind` then gives its shape.
+    fn new(deck: Option<StreamDeck>, kind: Kind, tx: Sender<Msg>, host: Option<Host>, serial: &str) -> Session {
         let cfg = Config::load().unwrap_or_else(|e| {
             eprintln!("fluxdeck: {e}; using an empty layout");
             Config::default()
         });
-        let kind = deck.kind();
         if let Some(h) = &host {
-            h.set_device(plugins::Device { id: serial.to_string(), name: model_name(kind), kind: sdk_kind(kind), cols: kind.column_count(), rows: kind.row_count() });
+            let name = if deck.is_some() { model_name(kind) } else { "FluxDeck".into() };
+            h.set_device(plugins::Device { id: serial.to_string(), name, kind: sdk_kind(kind), cols: kind.column_count(), rows: kind.row_count() });
             h.set_layout(&cfg);
         }
         Session {
@@ -275,7 +295,7 @@ impl Session {
             ghosts: HashSet::new(),
             return_to: None,
             kind,
-            deck: Arc::new(deck),
+            deck: deck.map(Arc::new),
             tx,
             theme: cfg.effective_theme(),
             painter: Painter::new(&cfg.font),
@@ -294,14 +314,36 @@ impl Session {
         }
     }
 
-    fn run(mut self, rx: &Receiver<Msg>) -> Result<(), StreamDeckError> {
-        self.deck.set_brightness(self.cfg.brightness)?;
+    /// Runs until the hardware is lost, or, with no hardware, until `stop` (asked once a second) says so.
+    fn run(mut self, rx: &Receiver<Msg>, mut stop: impl FnMut() -> bool) -> Result<(), StreamDeckError> {
+        if let Some(d) = &self.deck {
+            d.set_brightness(self.cfg.brightness)?;
+        }
         self.start_meters();
         self.appear(true, None);
-        let reader = self.deck.get_reader();
+        let reader = self.deck.as_ref().map(|d| d.get_reader());
+        let mut asked = Instant::now();
         loop {
-            for ev in reader.read(Some(Duration::from_millis(25)))? {
-                self.input(ev);
+            match &reader {
+                Some(r) => {
+                    for ev in r.read(Some(Duration::from_millis(25)))? {
+                        self.input(ev);
+                    }
+                }
+                None => {
+                    thread::sleep(Duration::from_millis(25));
+                    if asked.elapsed() > Duration::from_secs(1) {
+                        asked = Instant::now();
+                        if stop() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            // A phone started watching: send it every image once.
+            if remote::take_refresh() {
+                self.sent.clear();
+                self.dirty = true;
             }
             let mut reload = false;
             while let Ok(msg) = rx.try_recv() {
@@ -361,6 +403,7 @@ impl Session {
                         self.images.clear();
                         self.dirty = true;
                     }
+                    Msg::Remote(input) => self.remote(input),
                     Msg::Status { .. } | Msg::Meter { .. } => {}
                 }
             }
@@ -394,8 +437,10 @@ impl Session {
         {
             h.launch();
         }
-        if cfg.brightness != self.cfg.brightness {
-            self.deck.set_brightness(cfg.brightness)?;
+        if cfg.brightness != self.cfg.brightness
+            && let Some(d) = &self.deck
+        {
+            d.set_brightness(cfg.brightness)?;
         }
         let page_name = self.cfg.pages[self.page].name.clone();
         self.appear(false, None);
@@ -678,6 +723,23 @@ impl Session {
         }
     }
 
+    /// A tap on the phone goes the same way as the hardware's own press, twist or page swipe.
+    fn remote(&mut self, input: remote::Input) {
+        match input {
+            remote::Input::Key(i) => {
+                self.input(DeviceStateUpdate::ButtonDown(i));
+                self.input(DeviceStateUpdate::ButtonUp(i));
+            }
+            remote::Input::Turn(i, d) => self.input(DeviceStateUpdate::EncoderTwist(i, d)),
+            remote::Input::Press(i) => {
+                self.input(DeviceStateUpdate::EncoderDown(i));
+                self.input(DeviceStateUpdate::EncoderUp(i));
+            }
+            remote::Input::Page(i) if i < self.cfg.pages.len() => self.open_page(i),
+            remote::Input::Page(_) => {}
+        }
+    }
+
     fn press_dial(&mut self, i: u8) {
         if let Some(cmd) = self.cfg.pages[self.page].dial(i).map(|d| d.press.clone()) {
             self.act(Slot::Dial(i), &cmd, 1);
@@ -773,10 +835,17 @@ impl Session {
                 if let Some(instance) = plugin {
                     let _ = img.save(fluxdeck_core::paths::runtime(&format!("plugin-{instance}.png")));
                 }
-                self.deck.set_button_image(i, DynamicImage::ImageRgba8(img))?;
+                if remote::serving() {
+                    remote::set_frame(&Slot::Key(i).id(), &img);
+                }
+                if let Some(d) = &self.deck {
+                    d.set_button_image(i, DynamicImage::ImageRgba8(img))?;
+                }
             }
         }
-        self.deck.flush()?;
+        if let Some(d) = &self.deck {
+            d.flush()?;
+        }
         // shortcut: assumes a horizontal strip (Stream Deck +); the Plus XL strip is vertical.
         if let Some((w, h)) = self.kind.lcd_strip_size() {
             let n = self.kind.encoder_count().max(1);
@@ -789,8 +858,13 @@ impl Session {
                     d => self.painter.dial(d, st.as_deref(), self.levels.get(&slot).copied(), &self.theme, seg, h as u32),
                 };
                 if self.changed(slot, &img) {
-                    let rect = ImageRect::from_image(DynamicImage::ImageRgba8(img))?;
-                    self.deck.write_lcd((i as u32 * seg) as u16, 0, &rect)?;
+                    if remote::serving() {
+                        remote::set_frame(&slot.id(), &img);
+                    }
+                    if let Some(d) = &self.deck {
+                        let rect = ImageRect::from_image(DynamicImage::ImageRgba8(img))?;
+                        d.write_lcd((i as u32 * seg) as u16, 0, &rect)?;
+                    }
                 }
             }
         }
@@ -799,8 +873,12 @@ impl Session {
 
     /// Shares the current page and statuses with the editor; written only when they change.
     fn publish(&mut self) {
+        if remote::serving() {
+            let pages = self.cfg.pages.iter().map(|p| p.name.clone()).collect();
+            remote::set_layout(self.kind.column_count(), self.kind.row_count(), self.kind.encoder_count(), self.page, pages, &self.theme);
+        }
         let state = State {
-            model: format!("{:?}", self.kind),
+            model: if self.deck.is_some() { format!("{:?}", self.kind) } else { "Phone".into() },
             cols: self.kind.column_count(),
             rows: self.kind.row_count(),
             dials: self.kind.encoder_count(),

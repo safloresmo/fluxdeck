@@ -1837,6 +1837,58 @@ impl App {
         ui.label(RichText::new(tf("FluxDeck {}", &[env!("CARGO_PKG_VERSION")])).weak().size(12.5));
     }
 
+    /// The deck on a phone: the switch, and while on, the QR code that opens it with its key.
+    fn phone_deck_ui(&mut self, ui: &mut egui::Ui, card: Color32) {
+        use fluxdeck_core::remote::{self, Remote};
+        ui.add_space(14.0);
+        ui.label(RichText::new(t("Deck en el celular")).size(16.0).strong());
+        ui.add_space(6.0);
+        let mut on = remote::enabled();
+        setting(ui, card, t("Usar el celular como Stream Deck"), t("Un celular o tablet en tu misma red WiFi muestra tus teclas y las usa, con o sin Stream Deck conectado"), |ui| {
+            if toggle_switch(ui, &mut on) {
+                let mut r = Remote::load();
+                r.on = on;
+                r.save();
+            }
+        });
+        if !on {
+            return;
+        }
+        let r = Remote::load();
+        let Some(url) = r.url() else {
+            ui.label(RichText::new(t("No encontré tu red local: conéctate a una red WiFi o por cable.")).weak().size(12.5));
+            return;
+        };
+        ui.horizontal_top(|ui| {
+            qr_code(ui, &url, 190.0);
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.set_max_width(360.0);
+                ui.label(t("Escanéalo con la cámara del celular. En el navegador, «Añadir a pantalla de inicio» lo deja como una app."));
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(RichText::new(&url).monospace().size(11.5)).wrap());
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t("Copiar enlace")).clicked() {
+                        ui.ctx().copy_text(url.clone());
+                        self.notice = t("Enlace copiado").into();
+                    }
+                    if confirm_button(ui, true, t("Cambiar clave"), t("¿Desconectar los celulares?"), "remote-key") {
+                        let mut r = Remote::load();
+                        r.token = remote::new_token();
+                        r.save();
+                        self.notice = t("Clave nueva: vuelve a escanear el QR").into();
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(RichText::new(t("Quien tenga este QR puede usar tus teclas, y las teclas ejecutan comandos. No lo compartas; si lo hiciste, cambia la clave.")).weak().size(12.0));
+                if !self.service_up {
+                    ui.label(RichText::new(t("Necesita el servicio encendido.")).color(Color32::from_rgb(229, 72, 77)).size(12.5));
+                }
+            });
+        });
+    }
+
     /// Export the whole setup to a file, or bring one back (after saving what there is now).
     fn backup_ui(&mut self, ui: &mut egui::Ui, card: Color32) {
         use fluxdeck_core::backup;
@@ -2051,6 +2103,7 @@ impl App {
                 self.ryoku_widget = None;
             }
         }
+        self.phone_deck_ui(ui, card);
         // Plugins are installed, switched on and off, and removed in one place: the Plugins page.
         ui.add_space(14.0);
         let installed = fluxdeck_core::plugins::installed();
@@ -2436,6 +2489,7 @@ impl eframe::App for App {
 fn model_name(kind: &str) -> String {
     match kind {
         "Plus" => "Stream Deck +".into(),
+        "Phone" => t("Deck en el celular").into(),
         "PlusXl" => "Stream Deck + XL".into(),
         other => format!("Stream Deck {other}"),
     }
@@ -2492,6 +2546,24 @@ fn font_families() -> Vec<String> {
     all.sort_by_key(|f| f.to_lowercase());
     all.dedup();
     all
+}
+
+/// A QR code for `text`, black on white with a quiet border, `size` points wide.
+fn qr_code(ui: &mut egui::Ui, text: &str, size: f32) {
+    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else { return };
+    let (n, quiet) = (code.width(), 3);
+    let dark = code.to_colors();
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 10, Color32::WHITE);
+    let cell = size / (n + 2 * quiet) as f32;
+    for (i, c) in dark.iter().enumerate() {
+        if *c == qrcode::Color::Dark {
+            let (x, y) = ((i % n + quiet) as f32, (i / n + quiet) as f32);
+            // A hair wider than a cell, so neighbours meet without seams.
+            p.rect_filled(egui::Rect::from_min_size(rect.min + vec2(x * cell, y * cell), Vec2::splat(cell + 0.4)), 0, Color32::BLACK);
+        }
+    }
 }
 
 /// A button that acts on a second click within four seconds; the first click only asks.

@@ -172,6 +172,19 @@ Pendiente: los plugins que dibujan la tira con diseños propios (`setFeedbackLay
 el diseño de FluxDeck (título, valor y barra), y los plugins para otros aparatos (Ajazz, Mirabox…)
 no aplican.
 
+## Deck en el celular
+
+*Ajustes → Extensiones → Deck en el celular* convierte un celular o una tablet en tu misma red en
+un Stream Deck: muestra tus teclas, páginas y perillas con las mismas imágenes y estados, y cada
+toque hace lo mismo que la tecla. Funciona como copia de tu Stream Deck o sin ninguno conectado (con
+la forma de un Stream Deck +). Se abre escaneando el QR; en el navegador, «Añadir a pantalla de
+inicio» lo deja como una app.
+
+Está apagado hasta que lo enciendes. El servidor solo responde a redes locales y privadas, y cada
+pedido necesita la clave secreta que lleva el QR: quien la tenga puede usar tus teclas, así que no
+la compartas, y si lo hiciste, *Cambiar clave* deja fuera a los celulares que la tenían. Usa el
+puerto 27080 (o el siguiente libre); si tienes un firewall, ábrelo para tu red local.
+
 ## Respaldo
 
 *Ajustes → General → Respaldo* guarda todo en un archivo `fluxdeck-<fecha>.tar.gz` dentro de
