@@ -401,6 +401,7 @@ const EN: &[(&str, &str)] = &[
     ("Ninguna app está sonando.", "No app is playing."),
     ("Canales", "Channels"),
     ("Integraciones", "Integrations"),
+    ("Abrir mezclador", "Open mixer"),
     ("Recientes", "Recent"),
     ("Más", "More"),
     ("Respaldo", "Backup"),

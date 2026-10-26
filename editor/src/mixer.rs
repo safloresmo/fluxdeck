@@ -350,6 +350,58 @@ impl Mixer {
         go
     }
 
+    /// The home page's quick controls: the microphone in use and every group, each with its mute
+    /// and fader; changes go out as on the full mixer.
+    pub fn mini(&mut self, ui: &mut egui::Ui, accent: Color32, all_groups: &[groups::Group]) {
+        self.sync(ui.ctx());
+        ui.ctx().request_repaint_after(Duration::from_millis(60));
+        if self.levels_read.elapsed() > Duration::from_secs(2) && self.edited.elapsed() > Duration::from_secs(2) {
+            self.group_levels = groups::levels();
+            self.levels_read = Instant::now();
+        }
+        let snap = self.shown.clone();
+        if snap.channels.is_empty() {
+            ui.label(RichText::new(t("Leyendo el audio…")).weak());
+            return;
+        }
+        let row = |ui: &mut egui::Ui, icon: &str, name: &str, sub: &str, muted: bool| {
+            ui.add_sized([28.0, 28.0], egui::Label::new(RichText::new(icon).size(20.0).color(if muted { ui.visuals().weak_text_color() } else { accent })));
+            ui.vertical(|ui| {
+                ui.set_width(170.0);
+                ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
+                if !sub.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(sub).weak().size(11.5)).truncate()).on_hover_text(sub);
+                }
+            });
+        };
+        if let Some(mic) = snap.default_of(Kind::Input).cloned() {
+            let (vol, mute) = ui
+                .horizontal(|ui| {
+                    row(ui, icon_for(&mic), t("Micrófono"), &mic.label, mic.muted);
+                    fader(ui, mic.volume, mic.muted, Some(self.shown_levels[1]), accent, 240.0)
+                })
+                .inner;
+            self.channel_changes(&mic, vol, mute);
+        }
+        for g in all_groups {
+            let mut level = self.group_levels.get(&g.id).copied().unwrap_or_default();
+            let playing: Vec<&str> = snap.of(Kind::Playback).filter(|c| groups::group_of(all_groups, c).is_some_and(|x| x.id == g.id)).map(|c| c.label.as_str()).collect();
+            let sub = if playing.is_empty() { t("Nada sonando").to_string() } else { playing.join(", ") };
+            let (vol, mute) = ui
+                .horizontal(|ui| {
+                    row(ui, &g.icon, &g.name, &sub, level.muted);
+                    fader(ui, level.volume, level.muted, None, accent, 240.0)
+                })
+                .inner;
+            if vol.is_some() || mute {
+                level.volume = vol.unwrap_or(level.volume);
+                level.muted ^= mute;
+                self.group_levels.insert(g.id.clone(), level);
+                self.send(Op::Group(g.id.clone(), level, all_groups.to_vec()));
+            }
+        }
+    }
+
     /// Sends a fader or mute change made on a device or app row.
     fn channel_changes(&mut self, c: &Channel, volume: Option<f32>, mute: bool) {
         if let Some(v) = volume {

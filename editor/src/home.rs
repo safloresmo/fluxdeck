@@ -90,7 +90,9 @@ impl Home {
         self.corsair.store(corsair_on, Ordering::Relaxed);
     }
 
-    pub fn ui(&self, ui: &mut egui::Ui, card: Color32, accent: Color32, service_up: bool, live: Option<&State>, corsair_on: bool) -> Option<Go> {
+    /// `audio` draws the quick audio controls inside their card.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ui(&self, ui: &mut egui::Ui, card: Color32, accent: Color32, service_up: bool, live: Option<&State>, corsair_on: bool, audio: impl FnOnce(&mut egui::Ui)) -> Option<Go> {
         ui.ctx().request_repaint_after(Duration::from_secs(1));
         let s = self.latest.lock().unwrap().clone();
         let red = Color32::from_rgb(229, 72, 77);
@@ -178,6 +180,24 @@ impl Home {
                     ui.add_space(14.0);
                 }
             });
+
+            // The microphone and every group, at hand.
+            pad(ui, |ui| {
+                card_frame(card).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(t("Audio")).size(16.0).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(t("Abrir mezclador")).clicked() {
+                                go = Some(Go::Audio);
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                    audio(ui);
+                });
+            });
+            ui.add_space(14.0);
 
             // Connected devices.
             pad(ui, |ui| {

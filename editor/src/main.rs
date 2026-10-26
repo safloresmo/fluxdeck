@@ -2292,7 +2292,9 @@ impl eframe::App for App {
             let card = ui.visuals().faint_bg_color;
             let accent = self.accent();
             let live = self.live.clone();
-            let go = egui::CentralPanel::default().show(ui, |ui| self.home.ui(ui, card, accent, self.service_up, live.as_ref(), self.cfg.module("corsair"))).inner;
+            let groups = self.cfg.groups.clone();
+            let mixer = &mut self.mixer;
+            let go = egui::CentralPanel::default().show(ui, |ui| self.home.ui(ui, card, accent, self.service_up, live.as_ref(), self.cfg.module("corsair"), |ui| mixer.mini(ui, accent, &groups))).inner;
             match go {
                 Some(home::Go::Deck) => self.view = View::Deck,
                 Some(home::Go::Audio) => self.view = View::Mic,
@@ -2315,7 +2317,7 @@ impl eframe::App for App {
             return;
         }
         self.mic.set_active(self.view == View::Mic && self.audio_tab == 1);
-        self.mixer.set_active(self.view == View::Mic && self.audio_tab == 0);
+        self.mixer.set_active((self.view == View::Mic && self.audio_tab == 0) || self.view == View::Home);
         self.devices.set_active(self.view == View::Devices);
         if std::mem::take(&mut self.store.changed) {
             self.redetect();
