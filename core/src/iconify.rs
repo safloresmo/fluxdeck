@@ -20,6 +20,18 @@ pub struct Pack {
     pub category: String,
     /// Icons keep their own colours instead of following the theme.
     pub coloured: bool,
+    /// A few icon names that show what the pack looks like.
+    pub samples: Vec<String>,
+}
+
+/// Packs shown on the store's front page, in this order.
+const FEATURED: [&str; 16] = [
+    "mdi", "material-symbols", "simple-icons", "logos", "lucide", "tabler", "ph", "fluent", "solar", "twemoji", "noto", "game-icons", "skill-icons", "mingcute", "ri", "streamline",
+];
+
+/// The front page's packs, from those `packs` returned.
+pub fn featured(packs: &[Pack]) -> Vec<Pack> {
+    FEATURED.iter().filter_map(|f| packs.iter().find(|p| p.prefix == *f).cloned()).collect()
 }
 
 fn get(url: &str) -> Option<Value> {
@@ -51,6 +63,7 @@ fn packs_from(v: &Value) -> Vec<Pack> {
             license: s(&p["license"]["title"]),
             category: s(&p["category"]),
             coloured: p["palette"] == true,
+            samples: strings(&p["samples"]),
         })
         .collect();
     out.sort_by(|a, b| a.category.cmp(&b.category).then(b.total.cmp(&a.total)));
@@ -159,6 +172,7 @@ mod tests {
         let p = packs_from(&v);
         assert_eq!(p.iter().map(|p| p.prefix.as_str()).collect::<Vec<_>>(), ["logos", "mdi"]);
         assert!(p[0].coloured && p[1].license == "Apache 2.0");
+        assert_eq!(featured(&p).iter().map(|p| p.prefix.as_str()).collect::<Vec<_>>(), ["mdi", "logos"]);
         assert_eq!(encode("play & pause"), "play%20%26%20pause");
     }
 }

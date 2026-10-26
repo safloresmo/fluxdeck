@@ -21,6 +21,8 @@ pub struct IconStore {
     prefix: String,
     pack_query: String,
     packs: Arc<Mutex<Option<Vec<Pack>>>>,
+    /// Sample icons of the front page's packs, fetched with the pack list.
+    samples: Arc<Mutex<Vec<(String, String)>>>,
     found: Arc<Mutex<Found>>,
     textures: HashMap<String, TextureHandle>,
     edited: Instant,
@@ -34,6 +36,7 @@ impl IconStore {
             prefix: String::new(),
             pack_query: String::new(),
             packs: Arc::new(Mutex::new(None)),
+            samples: Arc::new(Mutex::new(Vec::new())),
             found: Arc::new(Mutex::new(Found::default())),
             textures: HashMap::new(),
             edited: Instant::now(),
@@ -80,6 +83,48 @@ impl IconStore {
         Some(tex)
     }
 
+    /// With nothing searched: the featured packs as cards with a few of their icons; a click opens one.
+    fn front_page(&mut self, ui: &mut egui::Ui, packs: &[Pack], ink: Color32) {
+        let featured = iconify::featured(packs);
+        if featured.is_empty() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(t("Cargando packs…"));
+            });
+            return;
+        }
+        ui.label(RichText::new(t("Packs destacados")).strong());
+        ui.label(RichText::new(t("Elige uno para verlo, o busca arriba en todos.")).weak().size(12.5));
+        ui.add_space(6.0);
+        let samples = self.samples.lock().unwrap().clone();
+        let card = ui.visuals().faint_bg_color;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            for p in &featured {
+                let r = ui.allocate_ui(vec2(196.0, 92.0), |ui| {
+                    egui::Frame::new().fill(card).corner_radius(12).inner_margin(10).show(ui, |ui| {
+                        ui.set_width(176.0);
+                        ui.set_height(72.0);
+                        ui.add(egui::Label::new(RichText::new(&p.name).strong()).truncate());
+                        ui.add(egui::Label::new(RichText::new(tf("{} íconos · {}", &[&p.total.to_string(), &p.license])).weak().size(11.5)).truncate());
+                        ui.horizontal(|ui| {
+                            for (full, svg) in samples.iter().filter(|(f, _)| f.split(':').next() == Some(p.prefix.as_str())) {
+                                if let Some(tex) = self.texture(ui.ctx(), full, svg, ink) {
+                                    ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(24.0, 24.0)));
+                                }
+                            }
+                        });
+                    })
+                });
+                let r = r.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&p.category);
+                if r.clicked() {
+                    self.prefix = p.prefix.clone();
+                    self.edited = Instant::now() - Duration::from_secs(1);
+                }
+            }
+        });
+    }
+
     /// Draws the window while it is open; returns the saved file of the icon picked, if one was.
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<String> {
         if !self.open {
@@ -87,8 +132,13 @@ impl IconStore {
         }
         if self.packs.lock().unwrap().is_none() {
             *self.packs.lock().unwrap() = Some(Vec::new());
-            let packs = self.packs.clone();
-            std::thread::spawn(move || *packs.lock().unwrap() = Some(iconify::packs()));
+            let (packs, samples) = (self.packs.clone(), self.samples.clone());
+            std::thread::spawn(move || {
+                let all = iconify::packs();
+                let names: Vec<String> = iconify::featured(&all).iter().flat_map(|p| p.samples.iter().take(5).map(|s| format!("{}:{s}", p.prefix))).collect();
+                *packs.lock().unwrap() = Some(all);
+                *samples.lock().unwrap() = iconify::svgs(&names);
+            });
         }
         self.request();
         let packs = self.packs.lock().unwrap().clone().unwrap_or_default();
@@ -136,7 +186,7 @@ impl IconStore {
                         ui.label(t("Buscando…"));
                     });
                 } else if asked.0.chars().count() < 2 && asked.1.is_empty() {
-                    ui.label(RichText::new(t("Escribe al menos dos letras, o elige un pack para verlo.")).weak());
+                    self.front_page(ui, &packs, ink);
                 } else if icons.is_empty() {
                     ui.label(RichText::new(t("Nada encontrado. Prueba otra palabra en inglés, o revisa la conexión.")).weak());
                 }
