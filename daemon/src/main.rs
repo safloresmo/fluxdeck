@@ -97,6 +97,12 @@ fn main() {
 }
 
 fn daemon() {
+    // Two malloc arenas instead of one per thread: bursts of threads (plugins, the phone server)
+    // would otherwise leave memory held after they end.
+    // SAFETY: called once at start, before other threads exist.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
     // One copy at a time: the desktop's startup list and systemd may both try.
     if fluxdeck_core::paths::service_running() {
         eprintln!("fluxdeck: already running");

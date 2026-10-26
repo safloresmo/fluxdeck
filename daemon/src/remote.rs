@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::Duration;
@@ -42,6 +42,12 @@ static VIEWS: LazyLock<(Mutex<HashMap<String, View>>, Condvar)> = LazyLock::new(
 /// Where each deck takes its taps.
 static INPUTS: LazyLock<Mutex<HashMap<String, Sender<Msg>>>> = LazyLock::new(Default::default);
 static SERVING: AtomicBool = AtomicBool::new(false);
+/// Connections being served; more than `MAX_CONNECTIONS` at once are turned away, so a flood from
+/// the network cannot use up the service's threads.
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONNECTIONS: usize = 64;
+/// The most a request may send before its body: a request line and headers, never megabytes.
+const MAX_HEAD: u64 = 16 * 1024;
 /// Decks to send every image once: all of them when serving starts, one when it is new.
 static REFRESH: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
 static REFRESH_ALL: AtomicBool = AtomicBool::new(false);
@@ -105,42 +111,53 @@ pub fn set_frame(view: &str, id: &str, img: &RgbaImage) {
 /// Serves while remote.json says so; checks once a second.
 pub fn start() {
     std::thread::spawn(move || {
-        let mut listener: Option<(TcpListener, Remote)> = None;
+        // The port being served and the thread waiting on it.
+        let mut serving: Option<(u16, std::thread::JoinHandle<()>)> = None;
         loop {
-            if !remote::enabled() {
-                if listener.take().is_some() {
-                    SERVING.store(false, Ordering::Relaxed);
-                    eprintln!("fluxdeck: deck on the phone off");
-                }
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
+            let want = remote::enabled().then(Remote::load);
+            let keep = matches!((&want, &serving), (Some(w), Some((port, _))) if w.port == *port);
+            if !keep && let Some((port, waiter)) = serving.take() {
+                stop(port, waiter);
             }
-            let want = Remote::load();
-            let same = listener.as_ref().is_some_and(|(_, r)| r.port == want.port);
-            if (!want.on || !same) && listener.take().is_some() {
-                SERVING.store(false, Ordering::Relaxed);
-                eprintln!("fluxdeck: deck on the phone off");
+            if let (Some(w), None) = (want, &serving) {
+                serving = bind(w).map(|(listener, r)| (r.port, std::thread::spawn(move || accept(listener))));
             }
-            if want.on && listener.is_none() {
-                listener = bind(want);
-            }
-            if let Some((l, _)) = &listener {
-                // Accept for a second, then look at the settings again; each request reads them
-                // fresh, so a changed or removed key stops working at once.
-                for _ in 0..20 {
-                    match l.accept() {
-                        Ok((stream, peer)) if remote::local_peer(peer.ip()) => {
-                            std::thread::spawn(move || handle(stream));
-                        }
-                        Ok(_) => {}
-                        Err(_) => std::thread::sleep(Duration::from_millis(50)),
-                    }
-                }
-            } else {
-                std::thread::sleep(Duration::from_secs(1));
-            }
+            // Each request reads the settings fresh, so a changed or removed key stops working at
+            // once; this loop only follows the switch and the port.
+            std::thread::sleep(Duration::from_secs(1));
         }
     });
+}
+
+/// Set to make the waiting thread let its port go.
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// Waits for connections, blocking, so a phone is answered at once and nothing wakes for nothing.
+fn accept(listener: TcpListener) {
+    for conn in listener.incoming() {
+        if STOPPING.load(Ordering::Relaxed) {
+            break;
+        }
+        let Ok(stream) = conn else { continue };
+        let local = stream.peer_addr().is_ok_and(|p| remote::local_peer(p.ip()));
+        if local && ACTIVE.load(Ordering::Relaxed) < MAX_CONNECTIONS {
+            ACTIVE.fetch_add(1, Ordering::Relaxed);
+            std::thread::spawn(move || {
+                handle(stream);
+                ACTIVE.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+    }
+}
+
+/// Wakes the waiting thread with a connection of its own, so it sees STOPPING and closes the port.
+fn stop(port: u16, waiter: std::thread::JoinHandle<()>) {
+    STOPPING.store(true, Ordering::Relaxed);
+    let _ = TcpStream::connect(("127.0.0.1", port));
+    let _ = waiter.join();
+    STOPPING.store(false, Ordering::Relaxed);
+    SERVING.store(false, Ordering::Relaxed);
+    eprintln!("fluxdeck: deck on the phone off");
 }
 
 /// Listens on the saved port, or the next free one (saved for the QR code).
@@ -148,7 +165,6 @@ fn bind(mut r: Remote) -> Option<(TcpListener, Remote)> {
     let first = r.port;
     for port in first..first.saturating_add(20) {
         if let Ok(l) = TcpListener::bind(("0.0.0.0", port)) {
-            let _ = l.set_nonblocking(true);
             if port != r.port {
                 r.port = port;
                 r.save();
@@ -164,17 +180,18 @@ fn bind(mut r: Remote) -> Option<(TcpListener, Remote)> {
 }
 
 fn handle(stream: TcpStream) {
-    let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut reader = BufReader::new(&stream);
+    // A phone sends its request at once; a connection that says nothing is let go quickly.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    // Reading stops at MAX_HEAD: a line that does not end there is dropped, not kept growing.
+    let mut reader = BufReader::new((&stream).take(MAX_HEAD + 4096));
     let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
+    if reader.read_line(&mut line).is_err() || !line.ends_with('\n') || line.len() as u64 > MAX_HEAD {
         return;
     }
     let mut parts = line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or("/"));
     let mut length = 0usize;
-    loop {
+    for _ in 0..64 {
         let mut h = String::new();
         if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
             break;
