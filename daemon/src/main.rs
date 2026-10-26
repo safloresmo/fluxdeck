@@ -105,7 +105,8 @@ fn daemon() {
     let (tx, rx) = channel();
     let _watcher = watch(tx.clone());
     effectsrun::start();
-    remote::start(tx.clone());
+    remote::start();
+    phone_decks();
     groupsrun::start();
     streamrun::start();
     profilesrun::start(tx.clone());
@@ -136,27 +137,13 @@ fn daemon() {
                 match StreamDeck::connect(&hid, kind, &serial) {
                     Ok(deck) => {
                         eprintln!("fluxdeck: connected to {kind:?} ({serial})");
-                        if let Err(e) = Session::new(Some(deck), kind, tx.clone(), host.clone(), &serial).run(&rx, || false) {
+                        if let Err(e) = Session::new(Some(deck), kind, tx.clone(), host.clone(), &serial, fluxdeck_core::remote::MAIN).run(&rx, || false) {
                             eprintln!("fluxdeck: lost the deck: {e}");
                         }
                         State::clear();
                     }
                     Err(e) => eprintln!("fluxdeck: cannot open {kind:?}: {e} (check the udev rule)"),
                 }
-            }
-            // No hardware, but the deck on the phone is on: run the deck for it alone, shaped like a
-            // Stream Deck +, until hardware shows up or the phone deck is switched off.
-            None if fluxdeck_core::remote::enabled() => {
-                waiting = false;
-                eprintln!("fluxdeck: no Stream Deck; the deck runs for the phone");
-                let stop = || {
-                    let _ = refresh_device_list(&mut hid);
-                    !list_devices(&hid).is_empty() || !fluxdeck_core::remote::enabled()
-                };
-                if let Err(e) = Session::new(None, Kind::Plus, tx.clone(), host.clone(), "fluxdeck-phone").run(&rx, stop) {
-                    eprintln!("fluxdeck: the phone deck stopped: {e}");
-                }
-                State::clear();
             }
             None if !waiting => {
                 eprintln!("fluxdeck: waiting for a Stream Deck");
@@ -216,6 +203,8 @@ pub(crate) fn shell(cmd: &str, steps: u32) -> Command {
 }
 
 struct Session {
+    /// The name phones know this deck by.
+    view: String,
     /// The hardware; None while the deck exists only on a phone.
     deck: Option<Arc<StreamDeck>>,
     kind: Kind,
@@ -273,12 +262,15 @@ fn sdk_kind(kind: Kind) -> u8 {
 impl Drop for Session {
     fn drop(&mut self) {
         self.stop_meters();
+        remote::unregister(&self.view);
     }
 }
 
 impl Session {
-    /// `deck` is None for the deck on a phone with no hardware; `kind` then gives its shape.
-    fn new(deck: Option<StreamDeck>, kind: Kind, tx: Sender<Msg>, host: Option<Host>, serial: &str) -> Session {
+    /// `deck` is None for a phone's own deck; `kind` then gives its shape. `view` names the deck for
+    /// the phones that show it: `remote::MAIN` for the Stream Deck, a phone's id for its own.
+    fn new(deck: Option<StreamDeck>, kind: Kind, tx: Sender<Msg>, host: Option<Host>, serial: &str, view: &str) -> Session {
+        remote::register(view, tx.clone());
         let cfg = Config::load().unwrap_or_else(|e| {
             eprintln!("fluxdeck: {e}; using an empty layout");
             Config::default()
@@ -289,6 +281,7 @@ impl Session {
             h.set_layout(&cfg);
         }
         Session {
+            view: view.to_string(),
             host,
             looks: HashMap::new(),
             images: HashMap::new(),
@@ -341,7 +334,7 @@ impl Session {
                 }
             }
             // A phone started watching: send it every image once.
-            if remote::take_refresh() {
+            if remote::take_refresh(&self.view) {
                 self.sent.clear();
                 self.dirty = true;
             }
@@ -836,7 +829,7 @@ impl Session {
                     let _ = img.save(fluxdeck_core::paths::runtime(&format!("plugin-{instance}.png")));
                 }
                 if remote::serving() {
-                    remote::set_frame(&Slot::Key(i).id(), &img);
+                    remote::set_frame(&self.view, &Slot::Key(i).id(), &img);
                 }
                 if let Some(d) = &self.deck {
                     d.set_button_image(i, DynamicImage::ImageRgba8(img))?;
@@ -859,7 +852,7 @@ impl Session {
                 };
                 if self.changed(slot, &img) {
                     if remote::serving() {
-                        remote::set_frame(&slot.id(), &img);
+                        remote::set_frame(&self.view, &slot.id(), &img);
                     }
                     if let Some(d) = &self.deck {
                         let rect = ImageRect::from_image(DynamicImage::ImageRgba8(img))?;
@@ -875,10 +868,14 @@ impl Session {
     fn publish(&mut self) {
         if remote::serving() {
             let pages = self.cfg.pages.iter().map(|p| p.name.clone()).collect();
-            remote::set_layout(self.kind.column_count(), self.kind.row_count(), self.kind.encoder_count(), self.page, pages, &self.theme);
+            remote::set_layout(&self.view, self.kind.column_count(), self.kind.row_count(), self.kind.encoder_count(), self.page, pages, &self.theme);
+        }
+        // Only the Stream Deck's deck is the one the editor follows.
+        if self.deck.is_none() {
+            return;
         }
         let state = State {
-            model: if self.deck.is_some() { format!("{:?}", self.kind) } else { "Phone".into() },
+            model: format!("{:?}", self.kind),
             cols: self.kind.column_count(),
             rows: self.kind.row_count(),
             dials: self.kind.encoder_count(),
@@ -889,6 +886,68 @@ impl Session {
             state.write();
             self.published = Some(state);
         }
+    }
+}
+
+/// The deck shape of a phone model (`remote::MODELS`).
+fn kind_of(model: &str) -> Kind {
+    match model {
+        "mini" => Kind::MiniMk2,
+        "mk2" => Kind::Mk2,
+        "xl" => Kind::Xl,
+        "neo" => Kind::Neo,
+        _ => Kind::Plus,
+    }
+}
+
+/// Decks of their own for phones that extend the Stream Deck or stand in for one: one session per
+/// phone, each on its own thread with its own pages and statuses. A session ends when its phone is
+/// removed, becomes a mirror, changes model, or the phone deck is switched off; it starts again on
+/// the next pass if it should.
+fn phone_decks() {
+    use fluxdeck_core::remote::{self as settings, Mode, Remote};
+    thread::spawn(|| {
+        let mut running: HashMap<String, thread::JoinHandle<()>> = HashMap::new();
+        loop {
+            running.retain(|_, h| !h.is_finished());
+            let phones = if settings::enabled() { Remote::load().phones } else { Vec::new() };
+            for p in phones.into_iter().filter(|p| p.mode != Mode::Mirror) {
+                if running.contains_key(&p.id) {
+                    continue;
+                }
+                let id = p.id.clone();
+                running.insert(id, thread::spawn(move || phone_deck(p)));
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+fn phone_deck(phone: fluxdeck_core::remote::Phone) {
+    use fluxdeck_core::remote::{self as settings, Mode, Remote};
+    let (tx, rx) = channel();
+    // The layout is reloaded here when config.toml changes, as the main watcher does for the deck.
+    let reload = tx.clone();
+    thread::spawn(move || {
+        let mtime = || std::fs::metadata(config::path()).and_then(|m| m.modified()).ok();
+        let mut seen = mtime();
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            if mtime() != seen {
+                seen = mtime();
+                if reload.send(Msg::Reload).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    eprintln!("fluxdeck: own deck for the phone \"{}\" ({})", phone.name, phone.model);
+    let stop = || {
+        !settings::enabled() || Remote::load().phones.iter().find(|p| p.id == phone.id).is_none_or(|p| p.mode == Mode::Mirror || p.model != phone.model)
+    };
+    // shortcut: no plugin host, so plugin keys show their icon but do not act; plugins talk to one deck.
+    if let Err(e) = Session::new(None, kind_of(&phone.model), tx, None, &phone.id, &phone.id).run(&rx, stop) {
+        eprintln!("fluxdeck: the phone's deck stopped: {e}");
     }
 }
 

@@ -127,6 +127,11 @@ struct App {
     backups: Option<Vec<std::path::PathBuf>>,
     backup_choice: Option<std::path::PathBuf>,
     backup_pick: Option<std::sync::Arc<std::sync::Mutex<Option<Option<std::path::PathBuf>>>>>,
+    /// Which phone's QR code is shown, and the deck shape the deck page is edited for (None: the
+    /// Stream Deck's) with the phones that have decks of their own, read now and then.
+    phone_qr: Option<String>,
+    view_as: Option<String>,
+    phone_shapes: (Vec<(String, String, (u8, u8, u8))>, Instant),
     /// The icon store window and the key or dial it picks an icon for.
     icon_store: icons::IconStore,
     icon_target: Option<Sel>,
@@ -236,6 +241,9 @@ impl App {
             backups: None,
             backup_choice: None,
             backup_pick: None,
+            phone_qr: None,
+            view_as: None,
+            phone_shapes: (Vec::new(), Instant::now() - Duration::from_secs(60)),
             icon_store: icons::IconStore::new(),
             icon_target: None,
             font_families: None,
@@ -504,6 +512,11 @@ impl App {
     }
 
     fn layout(&self) -> (u8, u8, u8) {
+        if let Some(id) = &self.view_as
+            && let Some((_, _, shape)) = self.phone_shapes.0.iter().find(|p| &p.0 == id)
+        {
+            return *shape;
+        }
         match &self.live {
             Some(s) if s.cols > 0 => (s.cols, s.rows, s.dials),
             _ => DEFAULT_LAYOUT,
@@ -718,6 +731,9 @@ impl App {
             if self.view != View::Deck {
                 let title = self.nav().into_iter().find(|(v, _, _)| *v == self.view).map(|(_, _, n)| n).unwrap_or_default();
                 ui.label(RichText::new(title).size(17.0).strong());
+            }
+            if self.view == View::Deck {
+                self.view_as_menu(ui);
             }
             if self.view == View::Deck && ui.ctx().content_rect().width() < 1100.0 {
                 let label = RichText::new(format!("\u{f0570}  {}", t("Acciones"))).size(14.0);
@@ -1837,14 +1853,50 @@ impl App {
         ui.label(RichText::new(tf("FluxDeck {}", &[env!("CARGO_PKG_VERSION")])).weak().size(12.5));
     }
 
-    /// The deck on a phone: the switch, and while on, the QR code that opens it with its key.
+    /// "View as": edit the deck page in the shape of a phone that has a deck of its own. Shown only
+    /// when there is one.
+    fn view_as_menu(&mut self, ui: &mut egui::Ui) {
+        use fluxdeck_core::remote::{self, Mode, Remote};
+        if self.phone_shapes.1.elapsed() > Duration::from_secs(2) {
+            let phones = if remote::enabled() { Remote::load().phones } else { Vec::new() };
+            self.phone_shapes = (phones.iter().filter(|p| p.mode != Mode::Mirror).map(|p| (p.id.clone(), p.name.clone(), p.shape())).collect(), Instant::now());
+        }
+        if self.phone_shapes.0.is_empty() {
+            self.view_as = None;
+            return;
+        }
+        let shown = self.view_as.as_ref().and_then(|id| self.phone_shapes.0.iter().find(|p| &p.0 == id)).map_or(t("Stream Deck").to_string(), |p| p.1.clone());
+        let mut pick = None;
+        egui::ComboBox::from_id_salt("view-as").selected_text(RichText::new(format!("\u{f0570}  {shown}")).size(14.0)).show_ui(ui, |ui| {
+            if ui.selectable_label(self.view_as.is_none(), t("Stream Deck")).clicked() {
+                pick = Some(None);
+            }
+            for (id, name, (c, r, d)) in &self.phone_shapes.0 {
+                let label = if *d > 0 { format!("{name} · {c}×{r} + {d}") } else { format!("{name} · {c}×{r}") };
+                if ui.selectable_label(self.view_as.as_ref() == Some(id), label).clicked() {
+                    pick = Some(Some(id.clone()));
+                }
+            }
+        })
+        .response
+        .on_hover_text(t("Ver como: edita las páginas con la forma de un celular o tablet"));
+        if let Some(p) = pick {
+            self.view_as = p;
+            self.sel = None;
+            self.drawn = None;
+        }
+        ui.separator();
+    }
+
+    /// The deck on a phone: the switch, and one card per phone or tablet with its mode, its deck
+    /// shape and its QR code.
     fn phone_deck_ui(&mut self, ui: &mut egui::Ui, card: Color32) {
-        use fluxdeck_core::remote::{self, Remote};
+        use fluxdeck_core::remote::{self, MODELS, Mode, Phone, Remote};
         ui.add_space(14.0);
         ui.label(RichText::new(t("Deck en el celular")).size(16.0).strong());
         ui.add_space(6.0);
         let mut on = remote::enabled();
-        setting(ui, card, t("Usar el celular como Stream Deck"), t("Un celular o tablet en tu misma red WiFi muestra tus teclas y las usa, con o sin Stream Deck conectado"), |ui| {
+        setting(ui, card, t("Usar el celular como Stream Deck"), t("Celulares o tablets en tu misma red WiFi muestran tus teclas y las usan, con o sin Stream Deck conectado"), |ui| {
             if toggle_switch(ui, &mut on) {
                 let mut r = Remote::load();
                 r.on = on;
@@ -1854,39 +1906,106 @@ impl App {
         if !on {
             return;
         }
-        let r = Remote::load();
-        let Some(url) = r.url() else {
-            ui.label(RichText::new(t("No encontré tu red local: conéctate a una red WiFi o por cable.")).weak().size(12.5));
-            return;
-        };
-        ui.horizontal_top(|ui| {
-            qr_code(ui, &url, 190.0);
-            ui.add_space(12.0);
-            ui.vertical(|ui| {
-                ui.set_max_width(360.0);
-                ui.label(t("Escanéalo con la cámara del celular. En el navegador, «Añadir a pantalla de inicio» lo deja como una app."));
-                ui.add_space(4.0);
-                ui.add(egui::Label::new(RichText::new(&url).monospace().size(11.5)).wrap());
-                ui.add_space(6.0);
+        let mut r = Remote::load();
+        let before = r.clone();
+        let modes = [(Mode::Mirror, t("Espejo de mi Stream Deck")), (Mode::Extend, t("Teclas extra")), (Mode::Alone, t("No tengo Stream Deck"))];
+        let mut remove = None;
+        let many = r.phones.len() > 1;
+        for i in 0..r.phones.len() {
+            let url = r.url(&r.phones[i]);
+            let p = &mut r.phones[i];
+            egui::Frame::new().fill(card).corner_radius(14).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    if ui.button(t("Copiar enlace")).clicked() {
-                        ui.ctx().copy_text(url.clone());
-                        self.notice = t("Enlace copiado").into();
-                    }
-                    if confirm_button(ui, true, t("Cambiar clave"), t("¿Desconectar los celulares?"), "remote-key") {
-                        let mut r = Remote::load();
-                        r.token = remote::new_token();
-                        r.save();
-                        self.notice = t("Clave nueva: vuelve a escanear el QR").into();
-                    }
+                    ui.add(TextEdit::singleline(&mut p.name).desired_width(220.0).font(egui::TextStyle::Heading));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if many && confirm_button(ui, true, t("Quitar"), t("¿Quitar este celular?"), ("phone-rm", &p.id)) {
+                            remove = Some(i);
+                        }
+                        let open = self.phone_qr.as_deref() == Some(p.id.as_str());
+                        if ui.button(if open { t("Ocultar QR") } else { t("Ver QR") }).clicked() {
+                            self.phone_qr = if open { None } else { Some(p.id.clone()) };
+                        }
+                    });
                 });
                 ui.add_space(6.0);
-                ui.label(RichText::new(t("Quien tenga este QR puede usar tus teclas, y las teclas ejecutan comandos. No lo compartas; si lo hiciste, cambia la clave.")).weak().size(12.0));
-                if !self.service_up {
-                    ui.label(RichText::new(t("Necesita el servicio encendido.")).color(Color32::from_rgb(229, 72, 77)).size(12.5));
+                ui.horizontal(|ui| {
+                    ui.label(t("Modo"));
+                    egui::ComboBox::from_id_salt(("phone-mode", &p.id)).selected_text(modes.iter().find(|m| m.0 == p.mode).map_or("", |m| m.1)).width(210.0).show_ui(ui, |ui| {
+                        for (mode, name) in modes {
+                            ui.selectable_value(&mut p.mode, mode, name);
+                        }
+                    });
+                    ui.add_space(12.0);
+                    ui.label(t("Forma"));
+                    let shape = |m: &(&str, &str, u8, u8, u8)| if m.4 > 0 { tf("{} · {}×{} y {} perillas", &[m.1, &m.2.to_string(), &m.3.to_string(), &m.4.to_string()]) } else { tf("{} · {}×{}", &[m.1, &m.2.to_string(), &m.3.to_string()]) };
+                    let shown = MODELS.iter().find(|m| m.0 == p.model).map(shape).unwrap_or_default();
+                    egui::ComboBox::from_id_salt(("phone-model", &p.id)).selected_text(shown).width(250.0).show_ui(ui, |ui| {
+                        for m in &MODELS {
+                            if ui.selectable_label(p.model == m.0, shape(m)).clicked() {
+                                p.model = m.0.to_string();
+                            }
+                        }
+                    });
+                });
+                let about = match p.mode {
+                    Mode::Mirror => t("Muestra lo mismo que tu Stream Deck y cambia de página con él. Usa la forma del aparato."),
+                    Mode::Extend => t("Sus propias páginas, al lado de tu Stream Deck. Edítalas en el Deck con «Ver como»."),
+                    Mode::Alone => t("Es tu Stream Deck. Edita sus páginas en el Deck con «Ver como»."),
+                };
+                ui.label(RichText::new(about).weak().size(12.5));
+                if p.mode != Mode::Mirror {
+                    ui.label(RichText::new(t("Las teclas de plugins todavía solo funcionan en el Stream Deck y en los espejos.")).weak().size(12.0));
+                }
+                if self.phone_qr.as_deref() == Some(p.id.as_str()) {
+                    ui.add_space(8.0);
+                    match &url {
+                        Some(url) => {
+                            ui.horizontal_top(|ui| {
+                                qr_code(ui, url, 190.0);
+                                ui.add_space(12.0);
+                                ui.vertical(|ui| {
+                                    ui.set_max_width(340.0);
+                                    ui.label(t("Escanéalo con la cámara del celular. En el navegador, «Añadir a pantalla de inicio» lo deja como una app."));
+                                    ui.add(egui::Label::new(RichText::new(url).monospace().size(11.5)).wrap());
+                                    ui.horizontal(|ui| {
+                                        if ui.button(t("Copiar enlace")).clicked() {
+                                            ui.ctx().copy_text(url.clone());
+                                            self.notice = t("Enlace copiado").into();
+                                        }
+                                        if confirm_button(ui, true, t("Cambiar clave"), t("¿Desconectar este celular?"), ("phone-key", &p.id)) {
+                                            p.token = remote::new_token();
+                                            self.notice = t("Clave nueva: vuelve a escanear el QR").into();
+                                        }
+                                    });
+                                });
+                            });
+                        }
+                        None => drop(ui.label(RichText::new(t("No encontré tu red local: conéctate a una red WiFi o por cable.")).weak().size(12.5))),
+                    }
                 }
             });
-        });
+            ui.add_space(8.0);
+        }
+        if let Some(i) = remove {
+            r.phones.remove(i);
+        }
+        if ui.button(t("+ Agregar celular o tablet")).clicked() {
+            let n = r.phones.len() + 1;
+            // With a Stream Deck plugged in, a new phone adds keys; without one, it is the deck.
+            let mode = if self.live.as_ref().is_some_and(|l| !l.model.is_empty()) { Mode::Extend } else { Mode::Alone };
+            let phone = Phone { id: r.new_id(), name: tf("Celular {}", &[&n.to_string()]), mode, ..Default::default() };
+            self.phone_qr = Some(phone.id.clone());
+            r.phones.push(phone);
+        }
+        if r != before {
+            r.save();
+        }
+        ui.add_space(6.0);
+        ui.label(RichText::new(t("Quien tenga un QR puede usar esas teclas, y las teclas ejecutan comandos. No lo compartas; si lo hiciste, cambia la clave.")).weak().size(12.0));
+        if !self.service_up {
+            ui.label(RichText::new(t("Necesita el servicio encendido.")).color(Color32::from_rgb(229, 72, 77)).size(12.5));
+        }
     }
 
     /// Export the whole setup to a file, or bring one back (after saving what there is now).
@@ -2489,7 +2608,6 @@ impl eframe::App for App {
 fn model_name(kind: &str) -> String {
     match kind {
         "Plus" => "Stream Deck +".into(),
-        "Phone" => t("Deck en el celular").into(),
         "PlusXl" => "Stream Deck + XL".into(),
         other => format!("Stream Deck {other}"),
     }

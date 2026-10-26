@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11,37 +11,54 @@
 <style>
   :root { --bg: #101014; --key: #1d1d24; --text: #e8e6ee; --accent: #9b8cff; --gap: 10px; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px system-ui, sans-serif; }
-  body { display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); gap: 12px; user-select: none; overscroll-behavior: none; }
-  nav { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; flex: none; }
-  nav button { flex: none; border: 0; border-radius: 999px; padding: 10px 16px; background: var(--key); color: var(--text); font: inherit; }
+  /* No double-tap zoom, no pinch, no pull-to-refresh: taps are for keys. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font: 15px system-ui, sans-serif; touch-action: manipulation; overscroll-behavior: none; }
+  body { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  /* The whole deck; turned a quarter when "rotate" is on, for phones locked upright. */
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px;
+         padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
+  body.rot #app { inset: auto; top: 0; left: 0; width: 100vh; height: 100vw; transform: rotate(90deg) translateY(-100%); transform-origin: top left; }
+  header { display: flex; gap: 8px; align-items: center; flex: none; }
+  nav { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
+  nav::-webkit-scrollbar { display: none; }
+  nav button, header .tool { flex: none; border: 0; border-radius: 999px; padding: 9px 15px; background: var(--key); color: var(--text); font: inherit; }
   nav button.on { background: var(--accent); color: var(--bg); font-weight: 600; }
-  main { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 14px; min-height: 0; }
-  #keys { display: grid; gap: var(--gap); width: 100%; max-width: 760px; margin: 0 auto; }
-  .key { aspect-ratio: 1; border: 0; padding: 0; border-radius: 16%; overflow: hidden; background: var(--key); transition: transform .08s; }
-  .key img, .dial img { width: 100%; height: 100%; display: block; pointer-events: none; }
+  header .tool { padding: 9px 12px; font-size: 17px; line-height: 1; }
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+  #keys, #dials { display: grid; gap: var(--gap); }
+  .key { border: 0; padding: 0; border-radius: 16%; overflow: hidden; background: var(--key); transition: transform .08s; touch-action: manipulation; }
+  .key img, .face img { width: 100%; height: 100%; display: block; pointer-events: none; }
   .key:active { transform: scale(.92); }
-  #dials { display: grid; gap: var(--gap); width: 100%; max-width: 760px; margin: 0 auto; }
   .dial { display: flex; flex-direction: column; gap: 6px; }
   .dial .face { aspect-ratio: 2; border: 0; padding: 0; border-radius: 10px; overflow: hidden; background: var(--key); }
   .dial .row { display: flex; gap: 6px; }
-  .dial .row button { flex: 1; border: 0; border-radius: 10px; padding: 12px 0; background: var(--key); color: var(--text); font-size: 18px; }
+  .dial .row button { flex: 1; border: 0; border-radius: 10px; height: 42px; background: var(--key); color: var(--text); font-size: 18px; touch-action: manipulation; }
   .dial button:active, .dial .face:active { filter: brightness(1.4); }
-  #wait { text-align: center; opacity: .7; }
+  #wait { text-align: center; opacity: .75; padding: 0 1em; }
 </style>
 <link rel="manifest" id="manifest">
 </head>
 <body>
-<nav id="pages"></nav>
-<main>
-  <div id="keys"></div>
-  <div id="dials"></div>
-  <p id="wait">Conectando con FluxDeck…</p>
-</main>
+<div id="app">
+  <header>
+    <nav id="pages"></nav>
+    <button class="tool" id="rotate" title="Girar">⟳</button>
+    <button class="tool" id="full" title="Pantalla completa">⛶</button>
+  </header>
+  <main>
+    <div id="keys"></div>
+    <div id="dials"></div>
+    <p id="wait">Conectando con FluxDeck…</p>
+  </main>
+</div>
 <script>
 const key = new URLSearchParams(location.search).get('k') || '';
 document.getElementById('manifest').href = '/manifest.webmanifest?k=' + key;
-let version = 0, shape = '', frames = {};
+let version = 0, shape = '', frames = {}, layout = null;
+
+// A double tap must not zoom, even where the browser ignores the viewport setting.
+document.addEventListener('dblclick', e => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
 
 function send(t, i, d) {
   if (navigator.vibrate) navigator.vibrate(12);
@@ -55,17 +72,57 @@ function button(cls, onTap) {
   return b;
 }
 
+// Rotate: kept per device, so a phone locked upright can still show the deck sideways.
+const rotate = document.getElementById('rotate');
+function setRotated(on) {
+  document.body.classList.toggle('rot', on);
+  try { localStorage.setItem('fluxdeck-rot', on ? '1' : ''); } catch (e) {}
+  fit();
+}
+rotate.addEventListener('click', () => setRotated(!document.body.classList.contains('rot')));
+try { if (localStorage.getItem('fluxdeck-rot')) document.body.classList.add('rot'); } catch (e) {}
+
+document.getElementById('full').addEventListener('click', async () => {
+  try {
+    if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+    await document.documentElement.requestFullscreen();
+  } catch (e) {}
+});
+
+// Sizes keys and dials so the whole deck fits the screen, upright or sideways.
+function fit() {
+  if (!layout) return;
+  const main = document.querySelector('main');
+  const W = main.clientWidth, H = main.clientHeight, gap = 10;
+  const { cols, rows, dials } = layout;
+  let dialH = 0, dialW = 0;
+  if (dials) {
+    dialW = Math.min((W - gap * (dials - 1)) / dials, 220);
+    dialH = dialW / 2 + 48 + 12;
+  }
+  const keyW = (W - gap * (cols - 1)) / cols;
+  const keyH = (H - dialH - gap * (rows - 1)) / rows;
+  const size = Math.max(36, Math.floor(Math.min(keyW, keyH, 160)));
+  const keys = document.getElementById('keys');
+  keys.style.gridTemplateColumns = `repeat(${cols}, ${size}px)`;
+  keys.style.gridAutoRows = `${size}px`;
+  const d = document.getElementById('dials');
+  d.style.display = dials ? 'grid' : 'none';
+  // Dials as wide as the keys above them, at most.
+  const width = Math.min(W, size * cols + gap * (cols - 1));
+  d.style.gridTemplateColumns = `repeat(${dials || 1}, ${Math.floor((width - gap * (dials - 1)) / Math.max(dials, 1))}px)`;
+}
+addEventListener('resize', fit);
+addEventListener('orientationchange', () => setTimeout(fit, 200));
+
 function build(l) {
   const keys = document.getElementById('keys'), dials = document.getElementById('dials');
   keys.innerHTML = ''; dials.innerHTML = '';
-  keys.style.gridTemplateColumns = `repeat(${l.cols}, 1fr)`;
   for (let i = 0; i < l.cols * l.rows; i++) {
     const b = button('key', () => send('key', i));
     b.appendChild(Object.assign(document.createElement('img'), { id: 'k' + i, alt: '' }));
     keys.appendChild(b);
   }
-  dials.style.gridTemplateColumns = `repeat(${l.dials}, 1fr)`;
-  dials.style.display = l.dials ? 'grid' : 'none';
   for (let i = 0; i < l.dials; i++) {
     const d = document.createElement('div');
     d.className = 'dial';
@@ -86,12 +143,12 @@ function build(l) {
 function pages(l) {
   const nav = document.getElementById('pages');
   nav.innerHTML = '';
+  if (l.pages.length < 2) return;
   l.pages.forEach((name, i) => {
     const b = button(i === l.page ? 'on' : '', () => send('page', i));
     b.textContent = name;
     nav.appendChild(b);
   });
-  nav.style.display = l.pages.length > 1 ? 'flex' : 'none';
 }
 
 function paint(l) {
@@ -100,27 +157,36 @@ function paint(l) {
   root.setProperty('--text', l.text); root.setProperty('--accent', l.accent);
 }
 
+function say(text) {
+  const w = document.getElementById('wait');
+  w.style.display = text ? 'block' : 'none';
+  w.textContent = text;
+}
+
 async function loop() {
   for (;;) {
     try {
       const r = await fetch(`/state?k=${key}&v=${version}`);
-      if (r.status === 403) { document.getElementById('wait').textContent = 'La clave cambió: vuelve a escanear el QR en FluxDeck.'; return; }
+      if (r.status === 403) { say('La clave cambió o este celular se quitó: vuelve a escanear el QR en FluxDeck.'); return; }
       const s = await r.json();
       version = s.version;
+      if (s.name) document.title = 'FluxDeck · ' + s.name;
+      if (s.waiting) { say('Este celular es un espejo: conecta tu Stream Deck para verlo aquí.'); continue; }
       const l = s.layout;
       if (!l || !l.cols) continue;
-      document.getElementById('wait').style.display = 'none';
+      say('');
+      layout = l;
       const now = `${l.cols}x${l.rows}x${l.dials}`;
       if (now !== shape) { shape = now; build(l); }
       paint(l);
       pages(l);
+      fit();
       for (const [id, v] of Object.entries(s.frames)) {
         const img = document.getElementById(id);
         if (img && frames[id] !== v) { frames[id] = v; img.src = `/img?k=${key}&id=${id}&v=${v}`; }
       }
     } catch (e) {
-      document.getElementById('wait').style.display = 'block';
-      document.getElementById('wait').textContent = 'Sin conexión con FluxDeck. Reintentando…';
+      say('Sin conexión con FluxDeck. Reintentando…');
       await new Promise(r => setTimeout(r, 2000));
     }
   }
