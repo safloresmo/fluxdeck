@@ -29,6 +29,7 @@ servicio; el editor por ahora dibuja la distribución del +.
   Solo aparece lo que existe en tu equipo.
 - Arrastrar y soltar, copiar y pegar, deshacer, menú de clic derecho, duplicar páginas.
 - Plugins de Elgato y OpenDeck, con tienda integrada.
+- Tienda de íconos: más de 200 000 íconos libres de Iconify (Material, logos de apps, emojis…).
 
 **Audio**
 - Mezclador en cuadrícula, como Wave Link: una fila por canal (micrófono, grupos y apps) y una
@@ -71,7 +72,9 @@ Cómo arranca se elige en *Ajustes → General → Arranque*:
 En los tres casos arranca minimizado: solo el ícono de la bandeja. Las actualizaciones con
 `dist/install.sh` respetan lo que elegiste.
 
-Atajos del editor: Ctrl+S guarda, Ctrl+Z / Ctrl+Shift+Z deshace y rehace, Ctrl+C / Ctrl+V / Ctrl+D
+Los cambios se guardan solos al terminar cada uno; arriba a la derecha dice «Guardado ✓».
+
+Atajos del editor: Ctrl+S guarda al momento, Ctrl+Z / Ctrl+Shift+Z deshace y rehace, Ctrl+C / Ctrl+V / Ctrl+D
 copian, pegan y duplican la tecla seleccionada, Supr la quita, Esc suelta la selección, Ctrl+1…6
 cambian de sección y Ctrl+, abre los ajustes. Clic derecho en una tecla o perilla abre las mismas
 acciones.
@@ -141,7 +144,8 @@ En el editor, la pestaña **Plugins** es una tienda con dos catálogos:
 - **Tienda de Elgato**: un archivo de la tienda oficial. Casi todos son para Windows y necesitan
   Wine; algunos no funcionan.
 
-Al instalar uno, sus acciones aparecen en la biblioteca. Los ajustes de cada acción se abren en
+Al instalar uno, sus acciones aparecen en la biblioteca. Cada plugin instalado se enciende, se
+apaga o se quita desde esa misma pestaña. Los ajustes de cada acción se abren en
 el navegador desde el inspector del editor y se guardan en `~/.config/fluxdeck/plugin-settings.json`.
 Los plugins de Node.js necesitan `node` 20 o más nuevo; los de Windows, `wine`. Los plugins se
 instalan en `~/.local/share/fluxdeck/plugins` y su registro queda en
@@ -158,6 +162,18 @@ fluxdeck plugin remove me.amankhanna.oampris
 Pendiente: los plugins que dibujan la tira con diseños propios (`setFeedbackLayout`) se ven con
 el diseño de FluxDeck (título, valor y barra), y los plugins para otros aparatos (Ajazz, Mirabox…)
 no aplican.
+
+## Íconos
+
+Junto al campo «Icono» de una tecla o perilla, **Tienda de íconos…** abre los packs libres de
+[Iconify](https://iconify.design): Material Design, Lucide, Fluent, logos de marcas, emojis y más.
+Se abre buscando el nombre de la tecla (los nombres en español comunes se pasan al inglés, que es
+como Iconify nombra sus íconos), y sin búsqueda muestra los packs destacados. Cada pack dice su
+licencia.
+
+El ícono elegido se guarda como SVG en `~/.local/share/fluxdeck/icons/`, así que la tecla no
+necesita internet. Los íconos de un solo color toman el color del texto del tema; los de color
+conservan los suyos.
 
 ## Periféricos Corsair (opcional)
 
