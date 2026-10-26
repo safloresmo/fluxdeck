@@ -1004,9 +1004,35 @@ impl App {
                         self.cfg.profiles.push(fluxdeck_core::profiles::Profile { id: "perfil".into(), name: t("Nuevo perfil").into(), ..Default::default() });
                         self.profile_sel = 0;
                     }
+                    self.profile_from_window(ui);
                 });
             }));
         });
+    }
+
+    /// A menu of the open windows; picking one makes a profile that turns on with that app.
+    fn profile_from_window(&mut self, ui: &mut egui::Ui) {
+        let used: Vec<String> = self.cfg.profiles.iter().flat_map(|p| p.apps.iter().map(|a| a.to_lowercase())).collect();
+        let windows: Vec<(String, String)> = self.windows.0.iter().filter(|(c, _)| c != "fluxdeck-editor" && !used.contains(&c.to_lowercase())).cloned().collect();
+        let mut pick = None;
+        egui::ComboBox::from_id_salt("profile-from-window").selected_text(t("Desde una app abierta")).show_ui(ui, |ui| {
+            if windows.is_empty() {
+                ui.label(RichText::new(t("No hay otras ventanas abiertas.")).weak());
+            }
+            for (class, title) in &windows {
+                if ui.selectable_label(false, app_name(class)).on_hover_text(format!("{class}\n{title}")).clicked() {
+                    pick = Some(class.clone());
+                }
+            }
+        });
+        if let Some(class) = pick {
+            let ids: Vec<fluxdeck_core::groups::Group> = self.cfg.profiles.iter().map(|p| fluxdeck_core::groups::Group { id: p.id.clone(), ..Default::default() }).collect();
+            let name = app_name(&class);
+            let id = fluxdeck_core::groups::new_id(&ids, &name);
+            self.cfg.profiles.push(fluxdeck_core::profiles::Profile { id, name, apps: vec![class], ..Default::default() });
+            self.profile_sel = self.cfg.profiles.len() - 1;
+            self.notice = t("Perfil creado: elige qué cambia cuando usas esa app").into();
+        }
     }
 
     fn profiles_page(&mut self, ui: &mut egui::Ui) {
@@ -1066,6 +1092,7 @@ impl App {
                         self.profile_sel = self.cfg.profiles.len() - 1;
                     }
                 });
+                self.profile_from_window(ui);
             });
             ui.add_space(16.0);
             // The chosen profile.
@@ -2508,6 +2535,24 @@ fn open_windows() -> Vec<(String, String)> {
     seen
 }
 
+/// A readable name from a window class: "dev.zed.Zed" → "Zed", "steam_app_123" → "Steam app 123".
+fn app_name(class: &str) -> String {
+    let last = class.rsplit('.').next().unwrap_or(class);
+    let words: Vec<String> = last
+        .split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .enumerate()
+        .map(|(i, w)| {
+            let mut c = w.chars();
+            match (i, c.next()) {
+                (0, Some(f)) => f.to_uppercase().chain(c).collect(),
+                _ => w.to_string(),
+            }
+        })
+        .collect();
+    if words.is_empty() { class.to_string() } else { words.join(" ") }
+}
+
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(16.0);
     ui.label(RichText::new(title).strong().size(15.0));
@@ -2750,10 +2795,18 @@ fn setup_fonts(ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn window_classes_read_as_app_names() {
+        assert_eq!(super::app_name("dev.zed.Zed"), "Zed");
+        assert_eq!(super::app_name("discord"), "Discord");
+        assert_eq!(super::app_name("steam_app_1245620"), "Steam app 1245620");
+        assert_eq!(super::app_name("com.obsproject.Studio"), "Studio");
+    }
+
     /// Every string marked for translation has an English entry.
     #[test]
     fn all_marked_strings_are_translated() {
-        let sources = [include_str!("main.rs"), include_str!("mic.rs"), include_str!("devices.rs"), include_str!("store.rs"), include_str!("effects.rs"), include_str!("home.rs"), include_str!("mixer.rs"), include_str!("../../core/src/presets.rs")];
+        let sources = [include_str!("main.rs"), include_str!("mic.rs"), include_str!("devices.rs"), include_str!("store.rs"), include_str!("effects.rs"), include_str!("home.rs"), include_str!("mixer.rs"), include_str!("icons.rs"), include_str!("../../core/src/presets.rs")];
         let mut missing = Vec::new();
         for src in sources {
             for marker in ["t(\"", "tf(\""] {
