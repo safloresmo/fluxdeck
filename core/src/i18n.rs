@@ -401,6 +401,8 @@ const EN: &[(&str, &str)] = &[
     ("Ninguna app está sonando.", "No app is playing."),
     ("Canales", "Channels"),
     ("Integraciones", "Integrations"),
+    ("Recientes", "Recent"),
+    ("Más", "More"),
     ("Respaldo", "Backup"),
     ("Tus páginas, teclas, perillas, grupos, perfiles, efectos e íconos en un archivo. Los plugins no van: se descargan de nuevo.", "Your pages, keys, dials, groups, profiles, effects and icons in one file. Plugins are not included: they download again."),
     ("Exportar", "Export"),

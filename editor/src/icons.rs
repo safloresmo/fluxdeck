@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Default)]
 struct Found {
-    /// The (search, pack) these results are for.
-    asked: (String, String),
+    /// The (search, pack, page) these results are for.
+    asked: (String, String, usize),
     /// Name, SVG, and its preview already drawn in the window's text colour.
     icons: Vec<(String, String, Option<RgbaImage>)>,
     loading: bool,
@@ -21,6 +21,8 @@ pub struct IconStore {
     pub open: bool,
     query: String,
     prefix: String,
+    /// How many times "more" was pressed for this search or pack.
+    page: usize,
     pack_query: String,
     packs: Arc<Mutex<Option<Vec<Pack>>>>,
     /// Sample icons of the front page's packs, fetched with the pack list.
@@ -38,6 +40,7 @@ impl IconStore {
             open: false,
             query: String::new(),
             prefix: String::new(),
+            page: 0,
             pack_query: String::new(),
             packs: Arc::new(Mutex::new(None)),
             samples: Arc::new(Mutex::new(Vec::new())),
@@ -61,20 +64,43 @@ impl IconStore {
 
     /// Starts a search once typing pauses; results for an older search are dropped when they land.
     fn request(&mut self) {
-        let want = (self.query.trim().to_lowercase(), self.prefix.clone());
+        let (q, prefix) = (self.query.trim().to_lowercase(), self.prefix.clone());
+        let same = {
+            let f = self.found.lock().unwrap();
+            f.asked.0 == q && f.asked.1 == prefix
+        };
+        if !same {
+            self.page = 0;
+        }
+        let want = (q, prefix, self.page);
         if self.found.lock().unwrap().asked == want || self.edited.elapsed() < Duration::from_millis(250) {
             return;
         }
         let mut f = self.found.lock().unwrap();
         f.asked = want.clone();
-        f.icons.clear();
+        // "More" keeps what is shown until the longer list lands.
+        if !same {
+            f.icons.clear();
+        }
         f.loading = want.0.chars().count() >= 2 || !want.1.is_empty();
         if !f.loading {
             return;
         }
         let (found, ink) = (self.found.clone(), self.ink);
         std::thread::spawn(move || {
-            let names = if want.0.chars().count() >= 2 { iconify::search(&want.0, &want.1) } else { iconify::pack_icons(&want.1) };
+            let names = if want.0.chars().count() >= 2 {
+                let mut names = iconify::search(&want.0, &want.1);
+                if want.2 > 0 && want.1.is_empty() {
+                    for n in iconify::search_featured(&want.0) {
+                        if !names.contains(&n) {
+                            names.push(n);
+                        }
+                    }
+                }
+                names
+            } else {
+                iconify::pack_icons(&want.1, iconify::LIMIT * (want.2 + 1))
+            };
             let icons = previews(iconify::svgs(&names), ink);
             let mut f = found.lock().unwrap();
             if f.asked == want {
@@ -98,14 +124,40 @@ impl IconStore {
     }
 
     /// With nothing searched: the featured packs as cards with a few of their icons; a click opens one.
-    fn front_page(&mut self, ui: &mut egui::Ui, packs: &[Pack]) {
+    /// Returns the file of a recent icon picked again.
+    fn front_page(&mut self, ui: &mut egui::Ui, packs: &[Pack]) -> Option<String> {
+        let mut picked = None;
+        let recent = iconify::recent(24);
+        if !recent.is_empty() {
+            ui.label(RichText::new(t("Recientes")).strong());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                for file in &recent {
+                    let key = format!("recent:{}", file.display());
+                    let img = if self.textures.contains_key(&key) {
+                        None
+                    } else {
+                        let svg = std::fs::read_to_string(file).unwrap_or_default();
+                        previews(vec![(key.clone(), svg)], self.ink).pop().and_then(|(_, _, img)| img)
+                    };
+                    let Some(tex) = self.texture(ui.ctx(), &key, img.as_ref()) else { continue };
+                    let name = file.file_stem().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                    let b = ui.add(egui::Button::image(egui::Image::new(&tex).fit_to_exact_size(vec2(30.0, 30.0))).min_size(vec2(42.0, 42.0)));
+                    if b.on_hover_text(name).clicked() {
+                        iconify::touch(file);
+                        picked = Some(file.display().to_string());
+                    }
+                }
+            });
+            ui.add_space(10.0);
+        }
         let featured = iconify::featured(packs);
         if featured.is_empty() {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(t("Cargando packs…"));
             });
-            return;
+            return picked;
         }
         ui.label(RichText::new(t("Packs destacados")).strong());
         ui.label(RichText::new(t("Elige uno para verlo, o busca arriba en todos.")).weak().size(12.5));
@@ -137,6 +189,7 @@ impl IconStore {
                 }
             }
         });
+        picked
     }
 
     /// Draws the window while it is open; returns the saved file of the icon picked, if one was.
@@ -200,7 +253,9 @@ impl IconStore {
                         ui.label(t("Buscando…"));
                     });
                 } else if asked.0.chars().count() < 2 && asked.1.is_empty() {
-                    self.front_page(ui, &packs);
+                    if let Some(p) = self.front_page(ui, &packs) {
+                        picked = Some(p);
+                    }
                 } else if icons.is_empty() {
                     ui.label(RichText::new(t("Nada encontrado. Prueba otra palabra en inglés, o revisa la conexión.")).weak());
                 }
@@ -216,6 +271,16 @@ impl IconStore {
                         }
                     }
                 });
+                // All packs: a second round inside the featured ones. One pack: the next page of it.
+                let searching = asked.0.chars().count() >= 2;
+                let more = if searching { asked.1.is_empty() && asked.2 == 0 && icons.len() >= 100 } else { !asked.1.is_empty() && icons.len() == iconify::LIMIT * (asked.2 + 1) };
+                if more && !loading {
+                    ui.add_space(8.0);
+                    if ui.button(t("Más")).clicked() {
+                        self.page += 1;
+                        self.edited = Instant::now() - Duration::from_secs(1);
+                    }
+                }
             });
             ui.add_space(6.0);
             ui.label(RichText::new(t("Íconos de Iconify, de código abierto. Cada pack tiene su licencia: la ves al pasar el ratón. El ícono elegido se guarda en tu equipo.")).weak().size(12.0));

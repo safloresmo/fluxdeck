@@ -8,8 +8,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const API: &str = "https://api.iconify.design";
-/// Results shown for one search or pack.
+/// Icons a pack shows at a time; "more" adds as many again.
 pub const LIMIT: usize = 120;
+/// The most results the public API gives for one search, however many are asked for.
+const SEARCH_MAX: usize = 128;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pack {
@@ -97,15 +99,45 @@ pub fn query_for(label: &str) -> String {
 
 /// Icons ("prefix:name") matching an English search, optionally within one pack.
 pub fn search(query: &str, prefix: &str) -> Vec<String> {
-    let mut url = format!("{API}/search?query={}&limit={LIMIT}", encode(query.trim()));
+    let mut url = format!("{API}/search?query={}&limit={SEARCH_MAX}", encode(query.trim()));
     if !prefix.is_empty() {
         url += &format!("&prefix={}", encode(prefix));
     }
     get(&url).map(|v| strings(&v["icons"])).unwrap_or_default()
 }
 
-/// The first icons of a pack, for browsing it without a search.
-pub fn pack_icons(prefix: &str) -> Vec<String> {
+/// More results than one search allows: the same search inside each featured pack, all at once.
+pub fn search_featured(query: &str) -> Vec<String> {
+    std::thread::scope(|s| {
+        let running: Vec<_> = FEATURED.iter().map(|p| s.spawn(move || search(query, p))).collect();
+        running.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    })
+}
+
+/// Icons picked before, newest first: the files the store saved.
+pub fn recent(n: usize) -> Vec<PathBuf> {
+    let mut all: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(crate::paths::data().join("icons"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|pack| std::fs::read_dir(pack.path()).into_iter().flatten().flatten())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "svg"))
+        .filter_map(|p| Some((std::fs::metadata(&p).and_then(|m| m.modified()).ok()?, p)))
+        .collect();
+    all.sort_by(|a, b| b.0.cmp(&a.0));
+    all.into_iter().take(n).map(|(_, p)| p).collect()
+}
+
+/// Moves an icon to the front of the recent ones.
+pub fn touch(file: &std::path::Path) {
+    if let Ok(text) = std::fs::read(file) {
+        let _ = std::fs::write(file, text);
+    }
+}
+
+/// The first `count` icons of a pack, for browsing it without a search.
+pub fn pack_icons(prefix: &str, count: usize) -> Vec<String> {
     let Some(v) = get(&format!("{API}/collection?prefix={}", encode(prefix))) else { return Vec::new() };
     let mut names = strings(&v["uncategorized"]);
     for list in v["categories"].as_object().into_iter().flatten().map(|(_, l)| strings(l)) {
@@ -113,7 +145,7 @@ pub fn pack_icons(prefix: &str) -> Vec<String> {
     }
     names.sort();
     names.dedup();
-    names.into_iter().take(LIMIT).map(|n| format!("{prefix}:{n}")).collect()
+    names.into_iter().take(count).map(|n| format!("{prefix}:{n}")).collect()
 }
 
 fn strings(v: &Value) -> Vec<String> {
