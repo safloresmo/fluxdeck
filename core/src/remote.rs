@@ -91,6 +91,7 @@ pub fn enabled() -> bool {
 impl Remote {
     /// The settings, with a first phone (keeping an older single key, so its QR still works).
     pub fn load() -> Remote {
+        crate::paths::keep_private(&path());
         let mut r: Remote = std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         if r.settle() {
             r.save();
@@ -118,12 +119,9 @@ impl Remote {
         changed
     }
 
+    /// Saved readable only by its owner: it holds the phones' keys.
     pub fn save(&self) {
-        let _ = std::fs::create_dir_all(crate::paths::state());
-        let tmp = path().with_extension("json.tmp");
-        if std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default()).is_ok() {
-            let _ = std::fs::rename(tmp, path());
-        }
+        let _ = crate::paths::write_private(&path(), &serde_json::to_string_pretty(self).unwrap_or_default());
     }
 
     /// The phone a key belongs to.

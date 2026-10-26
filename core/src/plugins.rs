@@ -298,15 +298,13 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn load_settings() -> Map<String, Value> {
+    crate::paths::keep_private(&settings_path());
     std::fs::read_to_string(settings_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
+/// Saved readable only by its owner: plugins keep sign-in tokens here.
 pub fn save_settings(all: &Map<String, Value>) {
-    let path = settings_path();
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_string_pretty(all).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(tmp, path);
-    }
+    let _ = crate::paths::write_private(&settings_path(), &serde_json::to_string_pretty(all).unwrap_or_default());
 }
 
 /// A fresh id for a placed plugin action.

@@ -1,5 +1,5 @@
 //! Where the program keeps its files. Every folder and runtime file name comes from NAME.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The program's name in paths, binaries and the editor's app id.
 pub const NAME: &str = "fluxdeck";
@@ -152,4 +152,28 @@ pub fn start_service() -> Result<(), String> {
 /// The service binary next to the running one, or on PATH.
 pub fn service_bin() -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(NAME))).filter(|p| p.is_file()).unwrap_or_else(|| NAME.into())
+}
+
+/// Writes a file only its owner can read (it holds keys), through a temporary file so a reader
+/// never sees half of it.
+pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    f.write_all(contents.as_bytes())?;
+    std::fs::rename(tmp, path)
+}
+
+/// Makes an existing file private if an older version left it readable by others.
+pub fn keep_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(m) = std::fs::metadata(path)
+        && m.permissions().mode() & 0o077 != 0
+    {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
 }
