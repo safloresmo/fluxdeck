@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod backup;
 pub mod catalogue;
 pub mod config;
 pub mod effects;

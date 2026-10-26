@@ -163,6 +163,24 @@ Pendiente: los plugins que dibujan la tira con diseños propios (`setFeedbackLay
 el diseño de FluxDeck (título, valor y barra), y los plugins para otros aparatos (Ajazz, Mirabox…)
 no aplican.
 
+## Respaldo
+
+*Ajustes → General → Respaldo* guarda todo en un archivo `fluxdeck-<fecha>.tar.gz` dentro de
+`~/Documentos/FluxDeck`: páginas, teclas, perillas, grupos y sus salidas, perfiles, tema, efectos del
+micrófono, la mezcla para stream y los íconos de la tienda. Los ajustes de los plugins solo van si
+los marcas, porque pueden tener claves de acceso. Los plugins no van: el respaldo guarda su lista y,
+al importarlo, dice cuáles faltan.
+
+Importar reemplaza la configuración, pero antes guarda una copia de la actual en
+`~/.local/share/fluxdeck/respaldos/`. Las rutas de los íconos se ajustan solas a la carpeta del
+equipo nuevo. «Otro archivo…» usa `zenity` para elegir un archivo fuera de la carpeta.
+
+```sh
+fluxdeck backup export                     # --plugin-settings para incluir sus ajustes
+fluxdeck backup list
+fluxdeck backup import ~/Documentos/FluxDeck/fluxdeck-2026-10-25-181830.tar.gz
+```
+
 ## Íconos
 
 Junto al campo «Icono» de una tecla o perilla, **Tienda de íconos…** abre los packs libres de

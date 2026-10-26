@@ -121,6 +121,12 @@ struct App {
     audio_tab: usize,
     settings_tab: usize,
     startup: fluxdeck_core::paths::Startup,
+    /// Backups: whether plugin settings go in, the backups found, the one chosen to import, and a
+    /// file being picked with the system's file chooser.
+    backup_plugins: bool,
+    backups: Option<Vec<std::path::PathBuf>>,
+    backup_choice: Option<std::path::PathBuf>,
+    backup_pick: Option<std::sync::Arc<std::sync::Mutex<Option<Option<std::path::PathBuf>>>>>,
     /// The icon store window and the key or dial it picks an icon for.
     icon_store: icons::IconStore,
     icon_target: Option<Sel>,
@@ -226,6 +232,10 @@ impl App {
             // `--settings 2` opens a given tab.
             settings_tab: std::env::args().nth(2).and_then(|a| a.parse().ok()).unwrap_or(0),
             startup: fluxdeck_core::paths::startup(),
+            backup_plugins: false,
+            backups: None,
+            backup_choice: None,
+            backup_pick: None,
             icon_store: icons::IconStore::new(),
             icon_target: None,
             font_families: None,
@@ -1724,6 +1734,7 @@ impl App {
                             if ui.selectable_label(self.settings_tab == i, RichText::new(name).size(15.0)).clicked() {
                                 self.settings_tab = i;
                                 self.ryoku_widget = None;
+                                self.backups = None;
                             }
                         }
                     });
@@ -1794,8 +1805,82 @@ impl App {
                 }
             });
         });
+        self.backup_ui(ui, card);
         ui.add_space(10.0);
         ui.label(RichText::new(tf("FluxDeck {}", &[env!("CARGO_PKG_VERSION")])).weak().size(12.5));
+    }
+
+    /// Export the whole setup to a file, or bring one back (after saving what there is now).
+    fn backup_ui(&mut self, ui: &mut egui::Ui, card: Color32) {
+        use fluxdeck_core::backup;
+        // A file picked in the system's chooser lands here, from its own thread.
+        if let Some(pick) = &self.backup_pick {
+            let done = pick.lock().unwrap().take();
+            if let Some(file) = done {
+                self.backup_pick = None;
+                if file.is_some() {
+                    self.backup_choice = file;
+                }
+            } else {
+                ui.ctx().request_repaint_after(Duration::from_millis(300));
+            }
+        }
+        let backups = self.backups.get_or_insert_with(backup::list).clone();
+        setting(ui, card, t("Respaldo"), t("Tus páginas, teclas, perillas, grupos, perfiles, efectos e íconos en un archivo. Los plugins no van: se descargan de nuevo."), |ui| {
+            if ui.button(t("Exportar")).clicked() {
+                match backup::export(self.backup_plugins) {
+                    Ok(file) => {
+                        self.notice = tf("Respaldo guardado en {}", &[&file.display().to_string()]);
+                        self.backups = None;
+                    }
+                    Err(e) => self.notice = tf("No se pudo exportar: {}", &[&e]),
+                }
+            }
+            if ui.button(t("Abrir carpeta")).clicked() {
+                let _ = std::fs::create_dir_all(backup::folder());
+                run(&format!("xdg-open '{}'", backup::folder().display().to_string().replace('\'', "")));
+            }
+        });
+        ui.checkbox(&mut self.backup_plugins, t("Incluir los ajustes de los plugins. Pueden tener claves de acceso: no compartas ese archivo."));
+        ui.add_space(8.0);
+        let shown = self.backup_choice.as_ref().map_or(t("Elige un respaldo").to_string(), |p| p.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+        let mut import = false;
+        setting(ui, card, t("Importar un respaldo"), t("Reemplaza tu configuración. Antes se guarda una copia de la actual."), |ui| {
+            egui::ComboBox::from_id_salt("backup-pick").selected_text(shown).width(230.0).show_ui(ui, |ui| {
+                if backups.is_empty() {
+                    ui.label(RichText::new(t("No hay respaldos en la carpeta.")).weak());
+                }
+                for b in &backups {
+                    let name = b.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                    if ui.selectable_label(self.backup_choice.as_ref() == Some(b), name).clicked() {
+                        self.backup_choice = Some(b.clone());
+                    }
+                }
+            });
+            if ui.add_enabled(self.backup_pick.is_none(), egui::Button::new(t("Otro archivo…"))).clicked() {
+                let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+                self.backup_pick = Some(slot.clone());
+                std::thread::spawn(move || {
+                    let out = Command::new("zenity").args(["--file-selection", "--file-filter=*.tar.gz"]).output();
+                    let file = out.ok().filter(|o| o.status.success()).map(|o| std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+                    *slot.lock().unwrap() = Some(file);
+                });
+            }
+            import = confirm_button(ui, self.backup_choice.is_some(), t("Importar"), t("¿Reemplazar tu configuración?"), "backup-import");
+        });
+        if import && let Some(file) = self.backup_choice.clone() {
+            match backup::import(&file) {
+                Ok(done) => {
+                    self.reload();
+                    let mut msg = tf("Respaldo importado. Lo que tenías quedó en {}", &[&done.previous.display().to_string()]);
+                    if !done.missing_plugins.is_empty() {
+                        msg += &tf(" · Vuelve a instalar: {}", &[&done.missing_plugins.join(", ")]);
+                    }
+                    self.notice = msg;
+                }
+                Err(e) => self.notice = tf("No se importó: {}", &[&e]),
+            }
+        }
     }
 
     fn settings_look(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {

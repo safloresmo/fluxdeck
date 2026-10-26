@@ -1,3 +1,4 @@
+mod backupcmd;
 mod corsaircmd;
 mod effectscmd;
 mod effectsrun;
@@ -74,6 +75,7 @@ fn main() {
         Some("plugin") => Some(plugincmd::command(&args[1..])),
         Some("effects") => Some(effectscmd::command(&args[1..])),
         Some("mix") => Some(mixcmd::command(&args[1..])),
+        Some("backup") => Some(backupcmd::command(&args[1..])),
         Some("launch") => Some(match args.get(1).and_then(|id| fluxdeck_core::apps::find(id)) {
             Some(app) => fluxdeck_core::apps::launch(&app).map_err(|e| e.to_string()),
             None => Err("usage: fluxdeck launch APP_ID (a .desktop file name)".into()),
