@@ -1,6 +1,7 @@
 //! The icon store window: search Iconify's open icon packs, browse one pack, preview, and pick an
 //! icon for the key or dial being edited. Searches run on a thread; the window never waits.
 use eframe::egui::{self, Color32, RichText, TextEdit, TextureHandle, TextureOptions, vec2};
+use fluxdeck_core::image::RgbaImage;
 use fluxdeck_core::i18n::{t, tf};
 use fluxdeck_core::iconify::{self, Pack};
 use std::collections::HashMap;
@@ -11,7 +12,8 @@ use std::time::{Duration, Instant};
 struct Found {
     /// The (search, pack) these results are for.
     asked: (String, String),
-    icons: Vec<(String, String)>,
+    /// Name, SVG, and its preview already drawn in the window's text colour.
+    icons: Vec<(String, String, Option<RgbaImage>)>,
     loading: bool,
 }
 
@@ -22,7 +24,9 @@ pub struct IconStore {
     pack_query: String,
     packs: Arc<Mutex<Option<Vec<Pack>>>>,
     /// Sample icons of the front page's packs, fetched with the pack list.
-    samples: Arc<Mutex<Vec<(String, String)>>>,
+    samples: Arc<Mutex<Vec<(String, String, Option<RgbaImage>)>>>,
+    /// The window's text colour, which single-colour previews are drawn in.
+    ink: Color32,
     found: Arc<Mutex<Found>>,
     textures: HashMap<String, TextureHandle>,
     edited: Instant,
@@ -37,16 +41,28 @@ impl IconStore {
             pack_query: String::new(),
             packs: Arc::new(Mutex::new(None)),
             samples: Arc::new(Mutex::new(Vec::new())),
+            ink: Color32::WHITE,
             found: Arc::new(Mutex::new(Found::default())),
             textures: HashMap::new(),
             edited: Instant::now(),
         }
     }
 
+    /// Opens the store already searching for icons that fit a key or dial named `label`.
+    pub fn open_for(&mut self, label: &str) {
+        self.open = true;
+        let q = iconify::query_for(label);
+        if !q.is_empty() {
+            self.query = q;
+            self.prefix.clear();
+            self.edited = Instant::now() - Duration::from_secs(1);
+        }
+    }
+
     /// Starts a search once typing pauses; results for an older search are dropped when they land.
     fn request(&mut self) {
         let want = (self.query.trim().to_lowercase(), self.prefix.clone());
-        if self.found.lock().unwrap().asked == want || self.edited.elapsed() < Duration::from_millis(400) {
+        if self.found.lock().unwrap().asked == want || self.edited.elapsed() < Duration::from_millis(250) {
             return;
         }
         let mut f = self.found.lock().unwrap();
@@ -56,10 +72,10 @@ impl IconStore {
         if !f.loading {
             return;
         }
-        let found = self.found.clone();
+        let (found, ink) = (self.found.clone(), self.ink);
         std::thread::spawn(move || {
             let names = if want.0.chars().count() >= 2 { iconify::search(&want.0, &want.1) } else { iconify::pack_icons(&want.1) };
-            let icons = iconify::svgs(&names);
+            let icons = previews(iconify::svgs(&names), ink);
             let mut f = found.lock().unwrap();
             if f.asked == want {
                 f.icons = icons;
@@ -68,13 +84,11 @@ impl IconStore {
         });
     }
 
-    fn texture(&mut self, ctx: &egui::Context, full: &str, svg: &str, ink: Color32) -> Option<TextureHandle> {
+    fn texture(&mut self, ctx: &egui::Context, full: &str, img: Option<&RgbaImage>) -> Option<TextureHandle> {
         if let Some(t) = self.textures.get(full) {
             return Some(t.clone());
         }
-        // Previews in the window's text colour, as the deck paints them in the theme's.
-        let svg = svg.replace("currentColor", &format!("#{:02x}{:02x}{:02x}", ink.r(), ink.g(), ink.b()));
-        let img = fluxdeck_core::plugins::data_url(&svg, 64)?;
+        let img = img?;
         let tex = ctx.load_texture(full, egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()), TextureOptions::LINEAR);
         if self.textures.len() > 800 {
             self.textures.clear();
@@ -84,7 +98,7 @@ impl IconStore {
     }
 
     /// With nothing searched: the featured packs as cards with a few of their icons; a click opens one.
-    fn front_page(&mut self, ui: &mut egui::Ui, packs: &[Pack], ink: Color32) {
+    fn front_page(&mut self, ui: &mut egui::Ui, packs: &[Pack]) {
         let featured = iconify::featured(packs);
         if featured.is_empty() {
             ui.horizontal(|ui| {
@@ -108,8 +122,8 @@ impl IconStore {
                         ui.add(egui::Label::new(RichText::new(&p.name).strong()).truncate());
                         ui.add(egui::Label::new(RichText::new(tf("{} íconos · {}", &[&p.total.to_string(), &p.license])).weak().size(11.5)).truncate());
                         ui.horizontal(|ui| {
-                            for (full, svg) in samples.iter().filter(|(f, _)| f.split(':').next() == Some(p.prefix.as_str())) {
-                                if let Some(tex) = self.texture(ui.ctx(), full, svg, ink) {
+                            for (full, _, img) in samples.iter().filter(|(f, _, _)| f.split(':').next() == Some(p.prefix.as_str())) {
+                                if let Some(tex) = self.texture(ui.ctx(), full, img.as_ref()) {
                                     ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(24.0, 24.0)));
                                 }
                             }
@@ -132,12 +146,12 @@ impl IconStore {
         }
         if self.packs.lock().unwrap().is_none() {
             *self.packs.lock().unwrap() = Some(Vec::new());
-            let (packs, samples) = (self.packs.clone(), self.samples.clone());
+            let (packs, samples, ink) = (self.packs.clone(), self.samples.clone(), self.ink);
             std::thread::spawn(move || {
                 let all = iconify::packs();
                 let names: Vec<String> = iconify::featured(&all).iter().flat_map(|p| p.samples.iter().take(5).map(|s| format!("{}:{s}", p.prefix))).collect();
                 *packs.lock().unwrap() = Some(all);
-                *samples.lock().unwrap() = iconify::svgs(&names);
+                *samples.lock().unwrap() = previews(iconify::svgs(&names), ink);
             });
         }
         self.request();
@@ -149,7 +163,7 @@ impl IconStore {
         if loading || self.edited.elapsed() < Duration::from_millis(500) {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
-        let ink = ctx.global_style().visuals.text_color();
+        self.ink = ctx.global_style().visuals.text_color();
         let mut picked = None;
         let mut open = self.open;
         egui::Window::new(t("Tienda de íconos")).open(&mut open).default_size([660.0, 540.0]).collapsible(false).show(ctx, |ui| {
@@ -186,16 +200,16 @@ impl IconStore {
                         ui.label(t("Buscando…"));
                     });
                 } else if asked.0.chars().count() < 2 && asked.1.is_empty() {
-                    self.front_page(ui, &packs, ink);
+                    self.front_page(ui, &packs);
                 } else if icons.is_empty() {
                     ui.label(RichText::new(t("Nada encontrado. Prueba otra palabra en inglés, o revisa la conexión.")).weak());
                 }
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    for (full, svg) in &icons {
-                        let Some(tex) = self.texture(ui.ctx(), full, svg, ink) else { continue };
+                    for (full, svg, img) in &icons {
+                        let Some(tex) = self.texture(ui.ctx(), full, img.as_ref()) else { continue };
                         let pack = full.split(':').next().and_then(|pre| packs.iter().find(|p| p.prefix == pre));
-                        let tip = pack.map_or(full.clone(), |p| format!("{full}\n{} · {}", p.name, p.license));
+                        let tip = pack.map_or(full.to_string(), |p| format!("{full}\n{} · {}", p.name, p.license));
                         let b = ui.add(egui::Button::image(egui::Image::new(&tex).fit_to_exact_size(vec2(34.0, 34.0))).min_size(vec2(46.0, 46.0)));
                         if b.on_hover_text(tip).clicked() {
                             picked = iconify::save(full, svg).ok().map(|p| p.display().to_string());
@@ -209,4 +223,15 @@ impl IconStore {
         self.open = open && picked.is_none();
         picked
     }
+}
+
+/// Draws each SVG small, single-colour ones in `ink`, so the window only uploads finished images.
+fn previews(svgs: Vec<(String, String)>, ink: Color32) -> Vec<(String, String, Option<RgbaImage>)> {
+    let hex = format!("#{:02x}{:02x}{:02x}", ink.r(), ink.g(), ink.b());
+    svgs.into_iter()
+        .map(|(full, svg)| {
+            let img = fluxdeck_core::plugins::data_url(&svg.replace("currentColor", &hex), 64);
+            (full, svg, img)
+        })
+        .collect()
 }

@@ -70,6 +70,31 @@ fn packs_from(v: &Value) -> Vec<Pack> {
     out
 }
 
+/// What to search for a key named `label`: its first line, with common Spanish deck words put in
+/// English, since Iconify's names are English. Words it does not know are kept.
+pub fn query_for(label: &str) -> String {
+    const WORDS: &[(&str, &str)] = &[
+        ("micrófono", "microphone"), ("microfono", "microphone"), ("mic", "microphone"), ("música", "music"), ("musica", "music"),
+        ("volumen", "volume"), ("audio", "audio"), ("sonido", "sound"), ("silencio", "mute"), ("silenciar", "mute"),
+        ("juegos", "game"), ("juego", "game"), ("navegador", "browser"), ("pantalla", "screen"), ("grabar", "record"),
+        ("grabación", "record"), ("captura", "screenshot"), ("luz", "light"), ("luces", "light"), ("teclado", "keyboard"),
+        ("ratón", "mouse"), ("raton", "mouse"), ("audífonos", "headphones"), ("audifonos", "headphones"), ("bocinas", "speaker"),
+        ("reproducir", "play"), ("pausa", "pause"), ("siguiente", "next"), ("anterior", "previous"), ("inicio", "home"),
+        ("ajustes", "settings"), ("carpeta", "folder"), ("cámara", "camera"), ("camara", "camera"), ("escena", "scene"),
+        ("transmitir", "stream"), ("directo", "live"), ("apagar", "power"), ("bloquear", "lock"), ("buscar", "search"),
+        ("correo", "mail"), ("calendario", "calendar"), ("reloj", "clock"), ("hora", "clock"), ("temperatura", "temperature"),
+        ("batería", "battery"), ("bateria", "battery"), ("efectos", "effects"), ("perfil", "user"), ("página", "page"),
+        ("abrir", "open"), ("cerrar", "close"), ("nota", "note"), ("notas", "note"), ("mensaje", "message"),
+    ];
+    let first = label.lines().next().unwrap_or("").to_lowercase();
+    first
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| WORDS.iter().find(|(es, _)| *es == w).map_or(w, |(_, en)| en))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Icons ("prefix:name") matching an English search, optionally within one pack.
 pub fn search(query: &str, prefix: &str) -> Vec<String> {
     let mut url = format!("{API}/search?query={}&limit={LIMIT}", encode(query.trim()));
@@ -105,18 +130,21 @@ pub fn svgs(icons: &[String]) -> Vec<(String, String)> {
             None => by_pack.push((prefix.to_string(), vec![name.to_string()])),
         }
     }
-    let mut found: Vec<(String, String)> = Vec::new();
-    for (prefix, names) in by_pack {
-        // Short URLs: a few dozen names per request.
-        for chunk in names.chunks(40) {
-            let Some(v) = get(&format!("{API}/{}.json?icons={}", encode(&prefix), chunk.iter().map(|n| encode(n)).collect::<Vec<_>>().join(","))) else { continue };
-            for name in chunk {
-                if let Some(svg) = svg_of(&v, name) {
-                    found.push((format!("{prefix}:{name}"), svg));
-                }
-            }
-        }
-    }
+    // One request per pack (a few dozen names each, for short URLs), all at once: a search spans
+    // up to fifty packs, and asking for them one after another took seconds.
+    let jobs: Vec<(&str, &[String])> = by_pack.iter().flat_map(|(prefix, names)| names.chunks(40).map(move |c| (prefix.as_str(), c))).collect();
+    let mut found: Vec<(String, String)> = std::thread::scope(|s| {
+        let running: Vec<_> = jobs
+            .iter()
+            .map(|(prefix, chunk)| {
+                s.spawn(move || {
+                    let Some(v) = get(&format!("{API}/{}.json?icons={}", encode(prefix), chunk.iter().map(|n| encode(n)).collect::<Vec<_>>().join(","))) else { return Vec::new() };
+                    chunk.iter().filter_map(|name| svg_of(&v, name).map(|svg| (format!("{prefix}:{name}"), svg))).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        running.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    });
     // Back in the order the search ranked them.
     found.sort_by_key(|(full, _)| icons.iter().position(|i| i == full));
     found
@@ -174,5 +202,8 @@ mod tests {
         assert!(p[0].coloured && p[1].license == "Apache 2.0");
         assert_eq!(featured(&p).iter().map(|p| p.prefix.as_str()).collect::<Vec<_>>(), ["mdi", "logos"]);
         assert_eq!(encode("play & pause"), "play%20%26%20pause");
+        assert_eq!(query_for("Micrófono\ncon efectos"), "microphone");
+        assert_eq!(query_for("Discord · voz"), "discord voz");
+        assert_eq!(query_for(""), "");
     }
 }

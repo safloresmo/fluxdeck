@@ -2006,7 +2006,8 @@ impl App {
         ui.label(t("Texto"));
         ui.add(TextEdit::multiline(&mut key.label).desired_rows(2).desired_width(f32::INFINITY).hint_text(t("Hasta tres líneas")));
         if icon_field(ui, &mut key.icon, &self.glyphs, &mut self.icon_query) {
-            (self.icon_target, self.icon_store.open) = (Some(Sel::Key(i)), true);
+            self.icon_target = Some(Sel::Key(i));
+            self.icon_store.open_for(&key.label);
         }
         let mut own = !key.color.is_empty();
         ui.horizontal(|ui| {
@@ -2094,7 +2095,8 @@ impl App {
         ui.label(t("Texto"));
         ui.add(TextEdit::singleline(&mut dial.label).desired_width(f32::INFINITY));
         if icon_field(ui, &mut dial.icon, &self.glyphs, &mut self.icon_query) {
-            (self.icon_target, self.icon_store.open) = (Some(Sel::Dial(i)), true);
+            self.icon_target = Some(Sel::Dial(i));
+            self.icon_store.open_for(&dial.label);
         }
 
         section(ui, t("Acciones"));
