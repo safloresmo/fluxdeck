@@ -7,8 +7,8 @@ fail=0
 step() { echo; echo "== $1"; }
 
 step "Pruebas"
-cargo test -q --workspace 2>&1 | grep -E "^test result|FAILED|panicked" || true
-cargo test -q --workspace >/dev/null 2>&1 || fail=1
+FLUXDECK_LANG=es cargo test -q --workspace 2>&1 | grep -E "^test result|FAILED|panicked" || true
+FLUXDECK_LANG=es cargo test -q --workspace >/dev/null 2>&1 || fail=1
 step "Clippy"
 cargo clippy -q --workspace --all-targets 2>&1 | grep -E "^error" -A6 && fail=1
 echo "  listo"
