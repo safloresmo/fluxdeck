@@ -191,7 +191,8 @@ fn first_line(out: &[u8]) -> String {
 /// Runs `cmd` with `sh`, with this binary's folder first in PATH so commands can call `fluxdeck …`.
 pub(crate) fn shell(cmd: &str, steps: u32) -> Command {
     let mut c = Command::new("sh");
-    c.arg("-c").arg(cmd).env("FLUXDECK_STEPS", steps.to_string()).stdin(Stdio::null());
+    // BOTONERA_STEPS is the name from before the rename: older configs still use it.
+    c.arg("-c").arg(cmd).env("FLUXDECK_STEPS", steps.to_string()).env("BOTONERA_STEPS", steps.to_string()).stdin(Stdio::null());
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)));
