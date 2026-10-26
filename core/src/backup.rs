@@ -82,6 +82,10 @@ fn write(dir: &Path, name: &str, plugin_settings: bool) -> Result<PathBuf, Strin
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        // A link in a backup could point anywhere on this computer: links are never followed.
+        if entry.file_type().is_ok_and(|t| t.is_symlink()) {
+            continue;
+        }
         if src.is_dir() {
             copy_tree(&src, &dst)?;
         } else if src.is_file() {
