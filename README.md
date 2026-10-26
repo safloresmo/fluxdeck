@@ -34,18 +34,22 @@ servicio; el editor por ahora dibuja la distribución del +.
 **Audio**
 - Mezclador en cuadrícula, como Wave Link: una fila por canal (micrófono, grupos y apps) y una
   columna por salida; un clic en el cruce manda el canal a esa salida.
-- Mezcla para stream opcional: una salida «FluxDeck Stream» para OBS, con volumen propio para el
-  micrófono y cada grupo. Solo existe mientras está encendida.
+- Mezcla para stream opcional: una salida «FluxDeck Stream» para OBS, con volumen y silencio
+  propios para el micrófono y cada grupo, independientes de lo que oyes. Solo existe mientras
+  está encendida; una app sin grupo se agrupa con un clic para mandarla.
 - Grupos de apps (Juegos, Música, Navegador, Chat…): cada grupo tiene su volumen y las apps
-  nuevas entran solas. Sin aparatos virtuales: no ensucia los ajustes de sonido del sistema.
+  nuevas entran solas. Con la mezcla apagada no crea aparatos virtuales.
 - Perillas del deck para el volumen de una app o de un grupo.
 - Micrófono: cadena de efectos propia (LADSPA, LV2 y los de PipeWire), con instalador de
   paquetes de efectos, y controles del Elgato XLR Dock.
 
 **Periféricos y más**
 - Módulo Corsair (a través de OpenLinkHub): batería, cancelación de ruido y luces.
-- Inicio con el estado de todo y avisos; tema del escritorio, oscuro, claro o propio; español
-  e inglés.
+- Inicio con el estado de todo, avisos y controles rápidos del micrófono y los grupos; tema del
+  escritorio, oscuro, claro o propio; español e inglés.
+- Perfiles que cambian página, volúmenes o un comando según la app que usas; se crean desde una
+  ventana abierta.
+- Respaldo de toda la configuración en un archivo.
 - Ícono en la bandeja; al arrancar con la sesión no abre ninguna ventana.
 - En Ryoku, un widget para la barra que se instala desde los ajustes.
 
