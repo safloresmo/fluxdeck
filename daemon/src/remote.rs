@@ -23,6 +23,8 @@ pub enum Input {
     Key(u8),
     Turn(u8, i8),
     Press(u8),
+    /// Move a dial to this value, 0 to 1.
+    Seek(u8, f32),
     Page(usize),
 }
 
@@ -70,8 +72,10 @@ pub fn unregister(view: &str) {
 }
 
 /// A deck's shape, page and colours; phones redraw when it changes.
-pub fn set_layout(view: &str, cols: u8, rows: u8, dials: u8, page: usize, pages: Vec<String>, theme: &Theme) {
-    let layout = json!({ "cols": cols, "rows": rows, "dials": dials, "page": page, "pages": pages,
+/// `levels` are the values the dials show (0 to 1), for a slider under each that has one.
+#[allow(clippy::too_many_arguments)]
+pub fn set_layout(view: &str, cols: u8, rows: u8, dials: u8, page: usize, pages: Vec<String>, levels: Vec<Option<f32>>, theme: &Theme) {
+    let layout = json!({ "cols": cols, "rows": rows, "dials": dials, "page": page, "pages": pages, "levels": levels,
         "bg": theme.background, "key": theme.key, "text": theme.text, "accent": theme.accent });
     let (views, wake) = &*VIEWS;
     let mut all = views.lock().unwrap();
@@ -241,6 +245,7 @@ fn parse_input(v: &Value) -> Option<Input> {
         "key" => Input::Key(u8::try_from(i).ok()?),
         "turn" => Input::Turn(u8::try_from(i).ok()?, v["d"].as_i64()?.clamp(-10, 10) as i8),
         "press" => Input::Press(u8::try_from(i).ok()?),
+        "seek" => Input::Seek(u8::try_from(i).ok()?, (v["v"].as_f64()? as f32).clamp(0.0, 1.0)),
         "page" => Input::Page(i as usize),
         _ => return None,
     })
@@ -260,6 +265,7 @@ mod tests {
         assert!(matches!(parse_input(&json!({"t": "key", "i": 3})), Some(Input::Key(3))));
         assert!(matches!(parse_input(&json!({"t": "turn", "i": 1, "d": -50})), Some(Input::Turn(1, -10))));
         assert!(matches!(parse_input(&json!({"t": "page", "i": 2})), Some(Input::Page(2))));
+        assert!(matches!(parse_input(&json!({"t": "seek", "i": 0, "v": 1.7})), Some(Input::Seek(0, v)) if v == 1.0));
         assert!(parse_input(&json!({"t": "key", "i": 900})).is_none());
         assert!(parse_input(&json!({"t": "rm", "i": 1})).is_none());
         assert!(parse_input(&json!({"t": "key"})).is_none());

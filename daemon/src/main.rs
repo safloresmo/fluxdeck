@@ -235,6 +235,10 @@ struct Session {
     ghosts: HashSet<String>,
     /// (page before a profile, page the profile showed).
     return_to: Option<(usize, usize)>,
+    /// A dial being moved to a value from a phone: (target, value when the trial step went out).
+    seeks: HashMap<u8, (f32, f32)>,
+    /// How much one step of each dial moves its value, learnt from a trial step.
+    dial_steps: HashMap<u8, f32>,
 }
 
 /// A plugin-drawn slot.
@@ -288,6 +292,8 @@ impl Session {
             images: HashMap::new(),
             ghosts: HashSet::new(),
             return_to: None,
+            seeks: HashMap::new(),
+            dial_steps: HashMap::new(),
             kind,
             deck: deck.map(Arc::new),
             tx,
@@ -348,6 +354,9 @@ impl Session {
                         if self.status.get(&slot) != Some(&text) {
                             self.status.insert(slot, text);
                             self.dirty = true;
+                        }
+                        if let Slot::Dial(i) = slot {
+                            self.seek_on(i);
                         }
                     }
                     Msg::Meter { generation, slot, level } if generation == self.generation => {
@@ -729,8 +738,56 @@ impl Session {
                 self.input(DeviceStateUpdate::EncoderDown(i));
                 self.input(DeviceStateUpdate::EncoderUp(i));
             }
+            remote::Input::Seek(i, target) => self.seek(i, target),
             remote::Input::Page(i) if i < self.cfg.pages.len() => self.open_page(i),
             remote::Input::Page(_) => {}
+        }
+    }
+
+    /// The value a dial shows (the level in its status, 0 to 1), if it shows one.
+    fn dial_level(&self, i: u8) -> Option<f32> {
+        self.status.get(&Slot::Dial(i)).and_then(|s| status_level(s))
+    }
+
+    /// Turns a dial by `steps` (negative: left), as twisting the hardware would.
+    fn turn(&mut self, i: u8, steps: i32) {
+        let Some(d) = self.cfg.pages[self.page].dial(i) else { return };
+        let cmd = if steps > 0 { d.right.clone() } else { d.left.clone() };
+        self.act(Slot::Dial(i), &cmd, steps.unsigned_abs().min(50));
+    }
+
+    /// Moves a dial toward a value. Dials only know "a step more or less", so with no step size
+    /// learnt yet, one trial step goes out and `seek_on` sends the rest once its effect shows.
+    fn seek(&mut self, i: u8, target: f32) {
+        let Some(now) = self.dial_level(i) else { return };
+        let dir = if target > now { 1 } else { -1 };
+        match self.dial_steps.get(&i) {
+            Some(step) => {
+                let n = ((target - now) / step).round() as i32;
+                if n != 0 {
+                    self.turn(i, n);
+                }
+            }
+            None if (target - now).abs() > 0.005 => {
+                self.seeks.insert(i, (target, now));
+                self.turn(i, dir);
+            }
+            None => {}
+        }
+    }
+
+    /// A dial's status came back: finish a seek with what the trial step taught.
+    fn seek_on(&mut self, i: u8) {
+        let (Some((target, before)), Some(now)) = (self.seeks.get(&i).copied(), self.dial_level(i)) else { return };
+        self.seeks.remove(&i);
+        let step = (now - before).abs();
+        if step < 0.001 {
+            return;
+        }
+        self.dial_steps.insert(i, step);
+        let n = ((target - now) / step).round() as i32;
+        if n != 0 {
+            self.turn(i, n);
         }
     }
 
@@ -869,7 +926,8 @@ impl Session {
     fn publish(&mut self) {
         if remote::serving() {
             let pages = self.cfg.pages.iter().map(|p| p.name.clone()).collect();
-            remote::set_layout(&self.view, self.kind.column_count(), self.kind.row_count(), self.kind.encoder_count(), self.page, pages, &self.theme);
+            let levels = (0..self.kind.encoder_count()).map(|i| self.dial_level(i)).collect();
+            remote::set_layout(&self.view, self.kind.column_count(), self.kind.row_count(), self.kind.encoder_count(), self.page, pages, levels, &self.theme);
         }
         // Only the Stream Deck's deck is the one the editor follows.
         if self.deck.is_none() {
@@ -888,6 +946,11 @@ impl Session {
             self.published = Some(state);
         }
     }
+}
+
+/// The level a status line carries, `text|level|#color`, when it is between 0 and 1.
+fn status_level(status: &str) -> Option<f32> {
+    status.split('|').nth(1)?.trim().parse::<f32>().ok().filter(|l| (0.0..=1.0).contains(l))
 }
 
 /// The deck shape of a phone model (`remote::MODELS`).
@@ -1006,5 +1069,17 @@ fn model_name(kind: Kind) -> String {
         Kind::Mini | Kind::MiniMk2 | Kind::MiniDiscord | Kind::MiniMk2Module => "Stream Deck Mini".into(),
         Kind::Xl | Kind::XlV2 => "Stream Deck XL".into(),
         _ => "Stream Deck".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_levels_from_status_lines() {
+        assert_eq!(super::status_level("Música 28%|0.28"), Some(0.28));
+        assert_eq!(super::status_level("mute||#b3261e"), None);
+        assert_eq!(super::status_level("CPU 6%|0.06|#ff0000"), Some(0.06));
+        assert_eq!(super::status_level("hola"), None);
+        assert_eq!(super::status_level("x|7"), None);
     }
 }

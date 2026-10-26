@@ -29,11 +29,13 @@
   .key { border: 0; padding: 0; border-radius: 16%; overflow: hidden; background: var(--key); transition: transform .08s; touch-action: manipulation; }
   .key img, .face img { width: 100%; height: 100%; display: block; pointer-events: none; }
   .key:active { transform: scale(.92); }
-  .dial { display: flex; flex-direction: column; gap: 6px; }
-  .dial .face { aspect-ratio: 2; border: 0; padding: 0; border-radius: 10px; overflow: hidden; background: var(--key); }
-  .dial .row { display: flex; gap: 6px; }
-  .dial .row button { flex: 1; border: 0; border-radius: 10px; height: 42px; background: var(--key); color: var(--text); font-size: 18px; touch-action: manipulation; }
-  .dial button:active, .dial .face:active { filter: brightness(1.4); }
+  .dial { display: flex; flex-direction: column; gap: 8px; }
+  /* Slide a finger across the dial's screen to turn it; tap to press. */
+  .dial .face { aspect-ratio: 2; border-radius: 10px; overflow: hidden; background: var(--key); touch-action: none; position: relative; }
+  .dial .face.held { outline: 2px solid var(--accent); }
+  .dial input[type=range] { width: 100%; height: 34px; margin: 0; accent-color: var(--accent); touch-action: none; }
+  .dial input[type=range][hidden] { display: none; }
+  #hint { text-align: center; font-size: 12px; opacity: .55; margin: 0; }
   #wait { text-align: center; opacity: .75; padding: 0 1em; }
 </style>
 <link rel="manifest" id="manifest">
@@ -48,6 +50,7 @@
   <main>
     <div id="keys"></div>
     <div id="dials"></div>
+    <p id="hint" hidden>Desliza sobre una perilla para girarla · tócala para presionarla</p>
     <p id="wait">Conectando con FluxDeck…</p>
   </main>
 </div>
@@ -60,9 +63,9 @@ let version = 0, shape = '', frames = {}, layout = null;
 document.addEventListener('dblclick', e => e.preventDefault(), { passive: false });
 document.addEventListener('gesturestart', e => e.preventDefault());
 
-function send(t, i, d) {
-  if (navigator.vibrate) navigator.vibrate(12);
-  fetch('/input?k=' + key, { method: 'POST', body: JSON.stringify({ t, i, d }) }).catch(() => {});
+function send(t, i, d, v) {
+  if (navigator.vibrate) navigator.vibrate(t === 'turn' ? 5 : 12);
+  fetch('/input?k=' + key, { method: 'POST', body: JSON.stringify({ t, i, d, v }) }).catch(() => {});
 }
 
 function button(cls, onTap) {
@@ -98,7 +101,8 @@ function fit() {
   let dialH = 0, dialW = 0;
   if (dials) {
     dialW = Math.min((W - gap * (dials - 1)) / dials, 220);
-    dialH = dialW / 2 + 48 + 12;
+    const slider = (layout.levels || []).some(l => l !== null) ? 42 : 0;
+    dialH = dialW / 2 + slider + 12 + 24;
   }
   const keyW = (W - gap * (cols - 1)) / cols;
   const keyH = (H - dialH - gap * (rows - 1)) / rows;
@@ -126,18 +130,56 @@ function build(l) {
   for (let i = 0; i < l.dials; i++) {
     const d = document.createElement('div');
     d.className = 'dial';
-    const face = button('face', () => send('press', i));
+    const face = document.createElement('div');
+    face.className = 'face';
     face.appendChild(Object.assign(document.createElement('img'), { id: 'd' + i, alt: '' }));
-    const row = document.createElement('div');
-    row.className = 'row';
-    const left = button('', () => send('turn', i, -1)); left.textContent = '−';
-    const press = button('', () => send('press', i)); press.textContent = '●';
-    const right = button('', () => send('turn', i, 1)); right.textContent = '+';
-    row.append(left, press, right);
-    d.append(face, row);
+    turnable(face, i);
+    // A slider for dials that show a value: let go of it and the dial moves there.
+    const range = Object.assign(document.createElement('input'), { type: 'range', min: 0, max: 100, step: 1, id: 'r' + i, hidden: true });
+    range.addEventListener('pointerdown', () => range.dataset.busy = '1');
+    range.addEventListener('change', () => { delete range.dataset.busy; send('seek', i, undefined, range.value / 100); });
+    d.append(face, range);
     dials.appendChild(d);
   }
+  document.getElementById('hint').hidden = !l.dials;
   frames = {};
+}
+
+// Sliding across a dial's screen turns it a step every STEP pixels; a short tap presses it.
+const STEP = 18;
+function turnable(face, i) {
+  let start = null, sent = 0, moved = 0;
+  face.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    face.setPointerCapture(e.pointerId);
+    start = e.clientX; sent = 0; moved = 0;
+    face.classList.add('held');
+  });
+  face.addEventListener('pointermove', e => {
+    if (start === null) return;
+    // Rotated, the screen's x runs along the deck's y.
+    const dx = document.body.classList.contains('rot') ? e.clientY - start : e.clientX - start;
+    moved = Math.max(moved, Math.abs(dx));
+    const steps = Math.trunc(dx / STEP) - sent;
+    if (steps) { sent += steps; send('turn', i, steps); }
+  });
+  const end = () => {
+    if (start === null) return;
+    if (moved < 8) send('press', i);
+    start = null;
+    face.classList.remove('held');
+  };
+  face.addEventListener('pointerup', end);
+  face.addEventListener('pointercancel', () => { start = null; face.classList.remove('held'); });
+}
+
+function levels(l) {
+  (l.levels || []).forEach((v, i) => {
+    const r = document.getElementById('r' + i);
+    if (!r) return;
+    r.hidden = v === null;
+    if (v !== null && !r.dataset.busy) r.value = Math.round(v * 100);
+  });
 }
 
 function pages(l) {
@@ -180,6 +222,7 @@ async function loop() {
       if (now !== shape) { shape = now; build(l); }
       paint(l);
       pages(l);
+      levels(l);
       fit();
       for (const [id, v] of Object.entries(s.frames)) {
         const img = document.getElementById(id);
