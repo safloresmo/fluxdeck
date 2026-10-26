@@ -62,13 +62,47 @@ pub fn sink_command() -> String {
     )
 }
 
-/// A `pipewire -c` config with one loopback per send. The microphone's follows `mic`; a group's
-/// waits for its apps to be linked in.
-pub fn to_conf(keys: &[String], mic: &str) -> String {
+/// The output a group's apps play into while the mix is on.
+pub fn group_sink(id: &str) -> String {
+    format!("fluxdeck_group_{id}")
+}
+
+/// A group's own output while the mix is on: its name, and the device it goes on to for you
+/// (empty: the default one).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupSink {
+    pub id: String,
+    pub name: String,
+    pub output: String,
+}
+
+/// A `pipewire -c` config for the mix. Each group gets an output its apps play into, which goes on
+/// to your device at the group's volume; each send takes its group's sound from that output's
+/// monitor, before that volume, so what you hear and what the stream gets are set apart. The
+/// microphone's send follows `mic`.
+pub fn to_conf(keys: &[String], mic: &str, groups: &[GroupSink]) -> String {
     let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
     let mut loops = String::new();
+    for g in groups {
+        // An explicit device falls back to the default one when it is unplugged.
+        let to = if g.output.is_empty() { String::new() } else { format!("target.object = {}", q(&g.output)) };
+        loops += &format!(
+            r#"    {{ name = libpipewire-module-loopback
+        args = {{
+            node.description = {desc}
+            audio.position = [ FL FR ]
+            capture.props = {{ node.name = {sink} media.class = Audio/Sink priority.session = 0 priority.driver = 0 }}
+            playback.props = {{ node.name = {out} {to} }}
+        }}
+    }}
+"#,
+            desc = q(&format!("FluxDeck · {}", g.name)),
+            sink = q(&group_sink(&g.id)),
+            out = q(&format!("{}_out", group_sink(&g.id))),
+        );
+    }
     for key in keys {
-        let source = if key == MIC { format!("target.object = {}", q(mic)) } else { "node.autoconnect = false".to_string() };
+        let source = if key == MIC { format!("target.object = {}", q(mic)) } else { format!("target.object = {} stream.capture.sink = true node.dont-reconnect = true", q(&group_sink(key))) };
         loops += &format!(
             r#"    {{ name = libpipewire-module-loopback
         args = {{
@@ -101,72 +135,14 @@ context.modules = [
     )
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Port {
-    pub id: u32,
-    pub node: u32,
-    pub output: bool,
-    pub channel: String,
-}
-
-/// Audio ports, leaving out monitor ports.
-pub fn ports(all: &[Value]) -> Vec<Port> {
-    all.iter()
-        .filter(|o| o["type"] == "PipeWire:Interface:Port" && o["info"]["props"]["port.monitor"] != true)
-        .filter_map(|o| {
-            Some(Port {
-                id: o["id"].as_u64()? as u32,
-                node: o["info"]["props"]["node.id"].as_u64()? as u32,
-                output: o["info"]["direction"] == "output",
-                channel: o["info"]["props"]["audio.channel"].as_str().unwrap_or_default().to_string(),
-            })
-        })
-        .collect()
-}
-
-/// Existing links, as (output port, input port).
-pub fn links(all: &[Value]) -> Vec<(u32, u32)> {
-    all.iter()
-        .filter(|o| o["type"] == "PipeWire:Interface:Link")
-        .filter_map(|o| Some((o["info"]["output-port-id"].as_u64()? as u32, o["info"]["input-port-id"].as_u64()? as u32)))
-        .collect()
-}
-
 /// The node id of a node name.
 pub fn node_id(all: &[Value], name: &str) -> Option<u32> {
     all.iter().find(|o| o["type"] == "PipeWire:Interface:Node" && o["info"]["props"]["node.name"] == name).and_then(|o| o["id"].as_u64()).map(|i| i as u32)
 }
 
-/// Links still missing from an app's outputs to a send's inputs: same channel to same channel,
-/// and a mono app to both sides.
-pub fn missing(app: u32, send: u32, ports: &[Port], existing: &[(u32, u32)]) -> Vec<(u32, u32)> {
-    let ins: Vec<&Port> = ports.iter().filter(|p| p.node == send && !p.output).collect();
-    let mut out = Vec::new();
-    for o in ports.iter().filter(|p| p.node == app && p.output) {
-        for i in ins.iter().filter(|i| o.channel == "MONO" || i.channel == o.channel) {
-            if !existing.contains(&(o.id, i.id)) {
-                out.push((o.id, i.id));
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn port(id: u32, node: u32, output: bool, channel: &str) -> Port {
-        Port { id, node, output, channel: channel.into() }
-    }
-
-    #[test]
-    fn links_channels_and_skips_existing() {
-        let ports = vec![port(1, 10, true, "FL"), port(2, 10, true, "FR"), port(3, 20, false, "FL"), port(4, 20, false, "FR"), port(5, 30, true, "MONO")];
-        assert_eq!(missing(10, 20, &ports, &[(1, 3)]), vec![(2, 4)]);
-        assert_eq!(missing(30, 20, &ports, &[]), vec![(5, 3), (5, 4)]);
-        assert!(missing(10, 99, &ports, &[]).is_empty());
-    }
 
     #[test]
     fn sends_start_off_and_only_live_ones_run() {
@@ -175,8 +151,13 @@ mod tests {
         m.sends.insert("chat".into(), Level { volume: 0.5, muted: false });
         m.sends.insert("musica".into(), Level { volume: 1.0, muted: true });
         assert_eq!(m.active(), vec![("chat".to_string(), Level { volume: 0.5, muted: false })]);
-        let conf = to_conf(&["mic".into(), "chat".into()], "mic\"x");
+        let groups = [GroupSink { id: "chat".into(), name: "Chat".into(), output: String::new() }, GroupSink { id: "juegos".into(), name: "Juegos".into(), output: "phones".into() }];
+        let conf = to_conf(&["mic".into(), "chat".into()], "mic\"x", &groups);
         assert!(conf.contains(r#"target.object = "mic\"x""#));
         assert!(conf.contains("fluxdeck_stream_send_chat_out"));
+        // The chat send listens to the chat group's output; games go to their own device.
+        assert!(conf.contains(r#"target.object = "fluxdeck_group_chat" stream.capture.sink = true"#));
+        assert!(conf.contains(r#"node.name = "fluxdeck_group_juegos_out" target.object = "phones""#));
+        assert!(conf.contains(r#"node.description = "FluxDeck · Chat""#));
     }
 }

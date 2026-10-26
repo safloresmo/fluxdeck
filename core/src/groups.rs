@@ -89,25 +89,52 @@ pub fn misrouted<'a>(route: Option<&'a String>, app: &mixer::Channel, snap: &Sna
 }
 
 /// Brings every playing app to its group's volume, mute and output; returns how many streams changed.
+/// While the stream mix is on, a group's apps play at full volume into the group's own output
+/// instead, and the group's volume and mute are set on that output (see `streammix`).
 pub fn apply(groups: &[Group], snap: &Snapshot) -> usize {
     let levels = levels();
     let routes = routes();
+    let mixing = crate::streammix::StreamMix::load().on;
     let mut changed = 0;
+    if mixing {
+        for g in groups {
+            let Some(sink) = snap.of(Kind::Output).find(|o| o.name == crate::streammix::group_sink(&g.id)) else { continue };
+            let want = levels.get(&g.id).copied().unwrap_or_default();
+            changed += set(sink, want);
+        }
+    }
     for app in snap.of(Kind::Playback) {
         let Some(g) = group_of(groups, app) else { continue };
+        if mixing {
+            // Until the group's output exists, its apps are left as they are.
+            let name = crate::streammix::group_sink(&g.id);
+            let Some(sink) = snap.of(Kind::Output).find(|o| o.name == name) else { continue };
+            if app.device.is_some_and(|d| d != sink.id) {
+                mixer::move_stream(app.id, &name);
+                changed += 1;
+            }
+            changed += set(app, Level::default());
+            continue;
+        }
         if let Some(output) = misrouted(routes.get(&g.id), app, snap) {
             mixer::move_stream(app.id, output);
             changed += 1;
         }
-        let want = levels.get(&g.id).copied().unwrap_or_default();
-        if (app.volume - want.volume).abs() > 0.005 {
-            mixer::set_volume(app.id, want.volume);
-            changed += 1;
-        }
-        if app.muted != want.muted {
-            mixer::set_mute(app.id, want.muted);
-            changed += 1;
-        }
+        changed += set(app, levels.get(&g.id).copied().unwrap_or_default());
+    }
+    changed
+}
+
+/// Sets a channel's volume and mute where they differ; returns how many changed.
+fn set(c: &mixer::Channel, want: Level) -> usize {
+    let mut changed = 0;
+    if (c.volume - want.volume).abs() > 0.005 {
+        mixer::set_volume(c.id, want.volume);
+        changed += 1;
+    }
+    if c.muted != want.muted {
+        mixer::set_mute(c.id, want.muted);
+        changed += 1;
     }
     changed
 }

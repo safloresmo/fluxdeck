@@ -103,9 +103,14 @@ columna Stream en la cuadrícula. El micrófono y cada grupo tienen ahí su env�
 propio; todos empiezan apagados y se encienden con su botón o moviendo su barra. En OBS se agrega
 una captura de audio de salida con «FluxDeck Stream».
 
-La salida la mantiene el servicio: desaparece al apagar la mezcla o al cerrarse FluxDeck, sin
-dejar nada en el sistema. El volumen del canal también cuenta para el stream (silenciar un grupo
-lo silencia en los dos), y una app tiene que estar en un grupo para llegar al stream.
+Lo que oyes y lo que va al stream son independientes, como en Wave Link: mientras la mezcla está
+encendida, cada grupo tiene su propia salida («FluxDeck · Juegos», «FluxDeck · Chat»…) que sigue a
+tu salida con el volumen y el silencio del grupo, y el envío al stream toma el sonido antes de ese
+volumen. Silenciar Música para ti no la silencia en el stream, y al revés.
+
+Esas salidas y «FluxDeck Stream» las mantiene el servicio: desaparecen al apagar la mezcla o al
+cerrarse FluxDeck, y las apps vuelven a su salida de siempre. Una app tiene que estar en un grupo
+para llegar al stream.
 
 ```sh
 fluxdeck mix stream on            # on / off / toggle

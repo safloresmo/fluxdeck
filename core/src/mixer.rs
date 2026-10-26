@@ -123,8 +123,9 @@ pub fn parse(all: &[Value]) -> Snapshot {
             volume: linear.max(0.0).cbrt() as f32,
             muted: props["mute"].as_bool().unwrap_or(false),
             device: device.map(|d| d as u32),
-            // The stream mix's own output gets its own column, not a place among the devices.
-            internal: kind == Kind::Output && (p["node.link-group"].is_string() || p["node.name"] == crate::streammix::SINK),
+            // The stream mix's own outputs get columns of their own, not places among the devices.
+            internal: kind == Kind::Output
+                && (p["node.link-group"].is_string() || p["node.name"] == crate::streammix::SINK || p["node.name"].as_str().is_some_and(|n| n.starts_with("fluxdeck_group_"))),
         });
     }
     snap.channels.sort_by_key(|c| (c.kind as u8, c.label.to_lowercase()));
