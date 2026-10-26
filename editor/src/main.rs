@@ -2384,8 +2384,16 @@ impl eframe::App for App {
                     }
                 });
                 if self.audio_tab == 0 {
-                    if let Some(mixer::Go::Effects) = self.mixer.ui(ui, card, accent, &mut self.cfg.hidden_devices, &mut self.cfg.output_names, &self.cfg.groups.clone()) {
-                        self.audio_tab = 1;
+                    match self.mixer.ui(ui, card, accent, &mut self.cfg.hidden_devices, &mut self.cfg.output_names, &self.cfg.groups.clone()) {
+                        Some(mixer::Go::Effects) => self.audio_tab = 1,
+                        Some(mixer::Go::Group(name, matcher)) => {
+                            if !self.cfg.groups.iter().any(|g| g.apps.contains(&matcher)) {
+                                let id = fluxdeck_core::groups::new_id(&self.cfg.groups, &name);
+                                self.cfg.groups.push(fluxdeck_core::groups::Group { id, name: name.clone(), icon: GROUP_ICONS[9].into(), apps: vec![matcher] });
+                                self.notice = tf("Grupo «{}» creado: ya puedes mandarla al stream", &[&name]);
+                            }
+                        }
+                        None => {}
                     }
                 } else if self.audio_tab == 1 {
                     self.mic.ui(ui, card, accent);

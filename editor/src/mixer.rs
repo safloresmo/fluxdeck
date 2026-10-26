@@ -60,6 +60,8 @@ impl Op {
 /// What a button in the mixer asks the window to do.
 pub enum Go {
     Effects,
+    /// Make a group for an app on its own: its name, and the name or program that picks it out.
+    Group(String, String),
 }
 
 pub struct Mixer {
@@ -307,7 +309,13 @@ impl Mixer {
                             ui.label(RichText::new(&c.binary).weak().size(11.5));
                         });
                         self.channel_changes(c, vol, mute);
-                        blank_cells(ui, card, self.stream.on as usize);
+                        // An app reaches the stream through a group: offer one of its own.
+                        if self.stream.on && group_cell(ui, card) {
+                            // Runners like Wine carry many apps: pick those out by name, not by program.
+                            let shared = ["wine", "proton", "python", "java", "electron", "node"].iter().any(|r| c.binary.to_lowercase().contains(r));
+                            let matcher = if c.binary.is_empty() || shared { c.label.to_lowercase() } else { c.binary.to_lowercase() };
+                            go = Some(Go::Group(c.label.clone(), matcher));
+                        }
                         let here = lands(c.device);
                         for o in &columns {
                             if route_cell(ui, card, accent, here == Some(o.id)) {
@@ -625,6 +633,21 @@ fn route_cell(ui: &mut egui::Ui, card: Color32, accent: Color32, on: bool) -> bo
     }
     let resp = if on { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Mandar aquí")) };
     resp.clicked() && !on
+}
+
+/// The stream cell of an app with no group: a button that makes it one. True when clicked.
+fn group_cell(ui: &mut egui::Ui, card: Color32) -> bool {
+    let h = row_height(ui);
+    let mut clicked = false;
+    cell_frame(card).show(ui, |ui| {
+        ui.set_width(COL_W - 24.0);
+        ui.set_min_height(h - 24.0);
+        ui.vertical_centered(|ui| {
+            ui.add_space(((h - 24.0 - 26.0) / 2.0).max(0.0));
+            clicked = ui.button(t("Agrupar")).on_hover_text(t("Le crea un grupo propio, para mandarla al stream con su propio volumen")).clicked();
+        });
+    });
+    clicked
 }
 
 /// Cells for a row that has no route to pick (inputs and apps recording).
