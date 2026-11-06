@@ -273,7 +273,8 @@ fn base64(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn percent(s: &str) -> String {
+/// Decodes `%XX` escapes, in data URLs and request paths.
+pub fn percent(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

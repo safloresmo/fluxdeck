@@ -106,6 +106,20 @@ pub fn launch(app: &App) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// Runs `cmd` with `sh`, with this binary's folder first in PATH so commands can call `fluxdeck …`.
+pub fn shell(cmd: &str, steps: u32) -> std::process::Command {
+    let mut c = std::process::Command::new("sh");
+    // BOTONERA_STEPS is the name from before the rename: older configs still use it.
+    c.arg("-c").arg(cmd).env("FLUXDECK_STEPS", steps.to_string()).env("BOTONERA_STEPS", steps.to_string()).stdin(std::process::Stdio::null());
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        if let Ok(p) = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))) {
+            c.env("PATH", p);
+        }
+    }
+    c
+}
+
 /// The icon theme in use and the ones it inherits from, ending in hicolor.
 fn themes() -> Vec<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();

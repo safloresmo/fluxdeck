@@ -2915,24 +2915,11 @@ fn icon_field(ui: &mut egui::Ui, icon: &mut String, glyphs: &[(char, String)], q
     store
 }
 
-/// Same as the daemon: `sh -c`, with this binary's folder first in PATH so `fluxdeck …` resolves.
-fn shell(cmd: &str) -> Command {
-    let mut c = Command::new("sh");
-    c.arg("-c").arg(cmd).env("FLUXDECK_STEPS", "1").env("BOTONERA_STEPS", "1").stdin(Stdio::null());
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        if let Ok(p) = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))) {
-            c.env("PATH", p);
-        }
-    }
-    c
-}
-
 fn run(cmd: &str) {
     if cmd.trim().is_empty() {
         return;
     }
-    if let Ok(mut child) = shell(cmd).stdout(Stdio::null()).spawn() {
+    if let Ok(mut child) = fluxdeck_core::apps::shell(cmd, 1).stdout(Stdio::null()).spawn() {
         std::thread::spawn(move || child.wait());
     }
 }
@@ -2941,7 +2928,7 @@ fn status_output(cmd: &str) -> String {
     if cmd.trim().is_empty() {
         return String::new();
     }
-    match shell(cmd).output() {
+    match fluxdeck_core::apps::shell(cmd, 1).output() {
         Ok(o) => String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string(),
         Err(e) => format!("error: {e}"),
     }

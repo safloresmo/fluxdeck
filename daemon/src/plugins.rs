@@ -370,7 +370,7 @@ impl Host {
         let n = s.read(&mut buf).unwrap_or(0);
         let req = String::from_utf8_lossy(&buf[..n]);
         let path = req.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or("/").to_string();
-        let path = percent_decode(&path);
+        let path = plugins::percent(&path);
         let (status, mime, body) = self.route(&path).unwrap_or((404, "text/plain", b"not found".to_vec()));
         let head = format!("HTTP/1.1 {status} OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", body.len());
         let _ = s.write_all(head.as_bytes());
@@ -464,23 +464,4 @@ fn mime(p: &Path) -> &'static str {
         "ttf" => "font/ttf",
         _ => "application/octet-stream",
     }
-}
-
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match (b[i], b.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok())) {
-            (b'%', Some(v)) => {
-                out.push(v);
-                i += 3;
-            }
-            (c, _) => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
