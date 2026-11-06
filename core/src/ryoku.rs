@@ -1,4 +1,4 @@
-//! The FluxDeck widget for a Ryoku desktop's bar. FluxDeck ships its source (`ryoku-widget/`) and
+//! The FluxDeck widget for a Ryoku desktop's bar. The installer copies its source from its own repo, and FluxDeck
 //! installs, updates, shows or hides it only through Ryoku's own commands.
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

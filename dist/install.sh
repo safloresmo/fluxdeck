@@ -18,11 +18,15 @@ install -Dm755 "target/release/$name-editor" "$bin/$name-editor"
 install -Dm644 "dist/$name.service" "$units/$name.service"
 install -Dm644 "dist/$name-editor.desktop" "$apps/$name-editor.desktop"
 install -Dm644 "assets/$name.svg" "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$name.svg"
-# The Ryoku bar widget's source, installed from Settings → Extensions when the user asks.
+# The Ryoku bar widget has its own repository; when it sits next to this one, its source is
+# copied here for Settings → Extensions to install when the user asks.
 widget="${XDG_DATA_HOME:-$HOME/.local/share}/$name/ryoku-widget"
-rm -rf "$widget"
-mkdir -p "$widget"
-cp -r ryoku-widget/. "$widget/"
+if [[ -d "../$name-widget" ]]; then
+    rm -rf "$widget"
+    mkdir -p "$widget"
+    cp -r "../$name-widget/." "$widget/"
+    rm -rf "$widget/.git"
+fi
 
 # Swap the running copy for the new one, however it was started.
 pkill -x "$name" 2>/dev/null || true

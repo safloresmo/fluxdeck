@@ -51,7 +51,7 @@ servicio; el editor por ahora dibuja la distribución del +.
   ventana abierta.
 - Respaldo de toda la configuración en un archivo.
 - Ícono en la bandeja; al arrancar con la sesión no abre ninguna ventana.
-- En Ryoku, un widget para la barra que se instala desde los ajustes.
+- En Ryoku, instala y muestra desde los ajustes un widget para la barra, que se distribuye aparte.
 
 ## Instalación
 
@@ -124,8 +124,9 @@ fluxdeck mix stream on            # on / off / toggle
 
 En un escritorio Ryoku, *Ajustes → Extensiones → Integraciones* instala el widget de FluxDeck
 para la barra (el micrófono, los grupos, el perfil y la mezcla para stream), lo muestra u oculta,
-lo actualiza cuando FluxDeck trae una versión nueva y lo quita. Su código está en
-`ryoku-widget/`; FluxDeck solo usa los comandos de Ryoku (`ryoku plugin`, `ryoku-shell bar`).
+lo actualiza cuando FluxDeck trae una versión nueva y lo quita. El widget no está en este
+repositorio: `dist/install.sh` lo copia si su carpeta `fluxdeck-widget` está junto a esta.
+FluxDeck solo usa los comandos de Ryoku (`ryoku plugin`, `ryoku-shell bar`).
 
 ## Elgato XLR Dock
 
