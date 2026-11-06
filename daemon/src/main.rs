@@ -134,6 +134,8 @@ fn daemon() {
     };
     State::clear();
     let mut waiting = false;
+    // Said once, not every second, until the deck opens or goes away.
+    let mut failing = false;
     loop {
         let _ = refresh_device_list(&mut hid);
         // shortcut: drives only the first deck found; loop over all of them when someone has two.
@@ -142,16 +144,22 @@ fn daemon() {
                 waiting = false;
                 match StreamDeck::connect(&hid, kind, &serial) {
                     Ok(deck) => {
+                        failing = false;
                         eprintln!("fluxdeck: connected to {kind:?} ({serial})");
                         if let Err(e) = Session::new(Some(deck), kind, tx.clone(), host.clone(), &serial, fluxdeck_core::remote::MAIN).run(&rx, || false) {
                             eprintln!("fluxdeck: lost the deck: {e}");
                         }
                         State::clear();
                     }
-                    Err(e) => eprintln!("fluxdeck: cannot open {kind:?}: {e} (check the udev rule)"),
+                    Err(e) if !failing => {
+                        eprintln!("fluxdeck: cannot open {kind:?}: {e} (check the udev rule)");
+                        failing = true;
+                    }
+                    Err(_) => {}
                 }
             }
             None if !waiting => {
+                failing = false;
                 eprintln!("fluxdeck: waiting for a Stream Deck");
                 waiting = true;
             }
