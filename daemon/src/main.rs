@@ -179,6 +179,7 @@ fn watch(tx: Sender<Msg>) -> Option<notify::RecommendedWatcher> {
         let ours = ev.paths.iter().any(|p| p.file_name().is_some_and(|n| n == "config.toml" || n == "theme.toml"));
         if ours {
             let _ = tx.send(Msg::Reload);
+            remote::reload_phone_decks();
         }
     })
     .map_err(|e| eprintln!("fluxdeck: config changes will not be noticed: {e}"))
@@ -982,22 +983,8 @@ fn phone_decks() {
 
 fn phone_deck(phone: fluxdeck_core::remote::Phone) {
     use fluxdeck_core::remote::{self as settings, Mode, Remote};
+    // Reloads come from the main watcher, through `remote::reload_phone_decks`.
     let (tx, rx) = channel();
-    // The layout is reloaded here when config.toml changes, as the main watcher does for the deck.
-    let reload = tx.clone();
-    thread::spawn(move || {
-        let mtime = || std::fs::metadata(config::path()).and_then(|m| m.modified()).ok();
-        let mut seen = mtime();
-        loop {
-            thread::sleep(Duration::from_secs(1));
-            if mtime() != seen {
-                seen = mtime();
-                if reload.send(Msg::Reload).is_err() {
-                    return;
-                }
-            }
-        }
-    });
     eprintln!("fluxdeck: own deck for the phone \"{}\" ({})", phone.name, phone.model);
     let stop = || {
         !settings::enabled() || Remote::load().phones.iter().find(|p| p.id == phone.id).is_none_or(|p| p.mode == Mode::Mirror || p.model != phone.model)

@@ -72,6 +72,15 @@ pub fn register(view: &str, tx: Sender<Msg>) {
     REFRESH.lock().unwrap().insert(view.to_string());
 }
 
+/// The layout changed: phones' own decks reload (the Stream Deck's hears it from the watcher).
+pub fn reload_phone_decks() {
+    for (view, tx) in INPUTS.lock().unwrap().iter() {
+        if view != remote::MAIN {
+            let _ = tx.send(Msg::Reload);
+        }
+    }
+}
+
 pub fn unregister(view: &str) {
     INPUTS.lock().unwrap().remove(view);
     VIEWS.0.lock().unwrap().remove(view);
