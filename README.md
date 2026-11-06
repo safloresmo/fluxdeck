@@ -55,12 +55,17 @@ servicio; el editor por ahora dibuja la distribución del +.
 
 ## Instalación
 
-Necesitas Rust, `fontconfig`, `libudev` (systemd), PipeWire con `wpctl`, `pw-dump` y `pw-record`.
+Necesitas `fontconfig`, `libudev` (systemd), PipeWire con `wpctl`, `pw-dump` y `pw-record`.
+
+Ya compilado (Linux x86_64): descarga `fluxdeck-<versión>-x86_64-linux.tar.gz` de
+[Releases](https://github.com/safloresmo/fluxdeck/releases), descomprímelo y, dentro de su carpeta:
 
 ```sh
 dist/install.sh          # binarios en ~/.local/bin, servicio de usuario, lanzador e ícono
 dist/install.sh --udev   # además, la regla udev (pide tu contraseña)
 ```
+
+Desde el código hace falta además Rust; `dist/install.sh` compila antes de instalar.
 
 La regla udev hace falta si tu usuario no puede abrir el deck (el servicio lo dice en
 `journalctl --user -u fluxdeck`) y para 48 V y Baja Z del XLR Dock. Si el servicio no está

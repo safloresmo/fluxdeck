@@ -1,0 +1,36 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  # Run by hand to try the build: the package is kept as an artifact and nothing is published.
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  linux:
+    # An older runner on purpose: binaries built against its glibc run on most distributions.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          pkg="fluxdeck-${GITHUB_REF_NAME#v}-x86_64-linux"
+          mkdir -p "$pkg/target/release" "$pkg/dist" "$pkg/assets"
+          cp target/release/fluxdeck target/release/fluxdeck-editor "$pkg/target/release/"
+          cp dist/install.sh dist/fluxdeck.service dist/fluxdeck-editor.desktop dist/70-fluxdeck.rules "$pkg/dist/"
+          cp assets/fluxdeck.svg "$pkg/assets/"
+          cp README.md LICENSE "$pkg/"
+          tar -czf "$pkg.tar.gz" "$pkg"
+          sha256sum "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
+          echo "pkg=$pkg" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.pkg }}
+          path: ${{ env.pkg }}.tar.gz*
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: gh release create "$GITHUB_REF_NAME" "$pkg.tar.gz" "$pkg.tar.gz.sha256" --verify-tag --generate-notes --title "FluxDeck ${GITHUB_REF_NAME#v}"
+        env:
+          GH_TOKEN: ${{ github.token }}

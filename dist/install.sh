@@ -9,7 +9,10 @@ bin="$HOME/.local/bin"
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 
-cargo build --release
+# A release package comes built; a source checkout builds here.
+if [[ -f Cargo.toml ]]; then
+    cargo build --release
+fi
 # Only a first install turns on starting with systemd; later updates keep the user's choice.
 first_install=0
 [[ -f "$units/$name.service" ]] || first_install=1
