@@ -411,12 +411,13 @@ impl Host {
         );
         let style = "<style>html{background:#2d2d2d;color-scheme:dark}body{max-width:420px;margin:24px auto}</style>";
         let head = format!("<base href=\"{base}\">{style}");
-        let lower = html.to_lowercase();
+        // ASCII only: full lowercasing can change byte lengths and shift the indexes used on `html`.
+        let lower = html.to_ascii_lowercase();
         let mut out = match lower.find("<head>") {
             Some(i) => format!("{}{head}{}", &html[..i + 6], &html[i + 6..]),
             None => format!("{head}{html}"),
         };
-        match out.to_lowercase().rfind("</body>") {
+        match out.to_ascii_lowercase().rfind("</body>") {
             Some(i) => out.insert_str(i, &script),
             None => out.push_str(&script),
         }

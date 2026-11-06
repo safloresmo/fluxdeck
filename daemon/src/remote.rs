@@ -140,13 +140,22 @@ fn accept(listener: TcpListener) {
         }
         let Ok(stream) = conn else { continue };
         let local = stream.peer_addr().is_ok_and(|p| remote::local_peer(p.ip()));
-        if local && ACTIVE.load(Ordering::Relaxed) < MAX_CONNECTIONS {
-            ACTIVE.fetch_add(1, Ordering::Relaxed);
+        let slot = Slot(ACTIVE.fetch_add(1, Ordering::Relaxed));
+        if local && slot.0 < MAX_CONNECTIONS {
             std::thread::spawn(move || {
+                let _slot = slot;
                 handle(stream);
-                ACTIVE.fetch_sub(1, Ordering::Relaxed);
             });
         }
+    }
+}
+
+/// A place among `ACTIVE`, given back when dropped, even if its thread panics.
+struct Slot(usize);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

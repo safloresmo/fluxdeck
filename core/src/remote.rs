@@ -143,9 +143,8 @@ impl Remote {
 /// 32 hex digits from the kernel's random source.
 pub fn new_token() -> String {
     let mut bytes = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = std::io::Read::read_exact(&mut f, &mut bytes);
-    }
+    // A key of zeros would let anyone in; better to stop than hand one out.
+    std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes)).expect("cannot read /dev/urandom");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
