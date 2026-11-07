@@ -26,11 +26,74 @@ jobs:
           tar -czf "$pkg.tar.gz" "$pkg"
           sha256sum "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
           echo "pkg=$pkg" >> "$GITHUB_ENV"
+      - name: Packages for Debian, Ubuntu, Fedora and openSUSE
+        run: |
+          curl -sSLo nfpm.tar.gz https://github.com/goreleaser/nfpm/releases/download/v2.48.0/nfpm_2.48.0_Linux_x86_64.tar.gz
+          echo "6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750  nfpm.tar.gz" | sha256sum -c
+          tar -xzf nfpm.tar.gz nfpm
+          mkdir -p build out
+          sed 's|%h/.local/bin/fluxdeck|/usr/bin/fluxdeck|' dist/fluxdeck.service > build/fluxdeck.service
+          export VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          ./nfpm package -f dist/nfpm.yaml -p deb -t out
+          ./nfpm package -f dist/nfpm.yaml -p rpm -t out
+          (cd out && sha256sum * > packages.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.pkg }}
           path: ${{ env.pkg }}.tar.gz*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: out/*
       - if: startsWith(github.ref, 'refs/tags/')
-        run: gh release create "$GITHUB_REF_NAME" "$pkg.tar.gz" "$pkg.tar.gz.sha256" --verify-tag --generate-notes --title "FluxDeck ${GITHUB_REF_NAME#v}"
+        run: gh release create "$GITHUB_REF_NAME" "$pkg.tar.gz" "$pkg.tar.gz.sha256" out/* --verify-tag --generate-notes --title "FluxDeck ${GITHUB_REF_NAME#v}"
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Installs the packages on clean systems: dependencies resolve, the binaries start, and the
+  # package names FluxDeck suggests exist there.
+  install:
+    needs: linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "fedora:latest", "opensuse/tumbleweed"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+      - name: Install
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update -q && apt-get install -yq ./fluxdeck_*.deb
+          elif command -v dnf >/dev/null; then
+            dnf install -yq ./fluxdeck-*.rpm
+          else
+            zypper -n --no-gpg-checks install --allow-unsigned-rpm ./fluxdeck-*.rpm
+          fi
+      - name: Start
+        run: |
+          ! ldd /usr/bin/fluxdeck /usr/bin/fluxdeck-editor | grep "not found"
+          fluxdeck rgb list
+          fluxdeck battery list
+          test -f /usr/lib/systemd/user/fluxdeck.service
+          grep -q "ExecStart=/usr/bin/fluxdeck" /usr/lib/systemd/user/fluxdeck.service
+          test -f /usr/lib/udev/rules.d/70-fluxdeck.rules
+      - name: Suggested packages
+        run: |
+          if command -v apt-get >/dev/null; then
+            names="lsp-plugins-lv2 x42-plugins calf-plugins swh-plugins openrgb headsetcontrol pipewire wireplumber"
+            have() { apt-cache show "$1" >/dev/null 2>&1; }
+          elif command -v dnf >/dev/null; then
+            names="lsp-plugins-lv2 x42-plugins lv2-calf-plugins ladspa-swh-plugins openrgb headsetcontrol pipewire wireplumber"
+            have() { dnf -q info "$1" >/dev/null 2>&1; }
+          else
+            names="lsp-plugins-lv2 x42-plugins calf ladspa-swh-plugins openrgb headsetcontrol pipewire wireplumber"
+            have() { zypper -n info "$1" 2>/dev/null | grep -q "^Name"; }
+          fi
+          echo "### ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
+          for n in $names; do
+            if have "$n"; then echo "- $n: yes" >> "$GITHUB_STEP_SUMMARY"; else echo "- $n: **missing**" >> "$GITHUB_STEP_SUMMARY"; fi
+          done

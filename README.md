@@ -69,8 +69,17 @@ Fedora 36+, Arch, openSUSE Tumbleweed…). Necesitas `fontconfig`, `libudev` (sy
 con `wpctl`, `pw-dump` y `pw-record`: el volumen, el mezclador y los efectos no funcionan con
 PulseAudio solo (Ubuntu 22.04 lo trae de serie; desde 22.10 ya viene PipeWire).
 
-Ya compilado (Linux x86_64): descarga `fluxdeck-<versión>-x86_64-linux.tar.gz` de
-[Releases](https://github.com/safloresmo/fluxdeck/releases), descomprímelo y, dentro de su carpeta:
+En [Releases](https://github.com/safloresmo/fluxdeck/releases) (Linux x86_64):
+
+- **Ubuntu, Debian y derivadas**: descarga el `.deb` y ábrelo, o `sudo apt install ./fluxdeck_<versión>_amd64.deb`.
+- **Fedora**: `sudo dnf install ./fluxdeck-<versión>-1.x86_64.rpm`.
+- **openSUSE**: `sudo zypper install ./fluxdeck-<versión>-1.x86_64.rpm`.
+
+Los paquetes traen la regla udev, así que el deck funciona sin más pasos. Luego abre FluxDeck desde
+el menú de apps: la primera vez pregunta qué quieres usar, y desde Inicio se inicia el servicio.
+
+En cualquier otra distribución, descarga `fluxdeck-<versión>-x86_64-linux.tar.gz`, descomprímelo
+y, dentro de su carpeta:
 
 ```sh
 dist/install.sh          # binarios en ~/.local/bin, servicio de usuario, lanzador e ícono
