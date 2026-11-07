@@ -178,6 +178,7 @@ impl App {
         };
         let nodes = pw::nodes();
         let env = presets::Env::detect(&cfg.modules);
+        let devices = devices::Devices::new(&env, &cfg.modules);
         App {
             painter: Painter::new(&cfg.font),
             font: cfg.font.clone(),
@@ -197,7 +198,7 @@ impl App {
             live_checked: Instant::now(),
             presets: presets::all(&env),
             mic: mic::Mic::new(env.dock.clone(), env.filters.first().cloned()),
-            devices: devices::Devices::new(&env.corsair),
+            devices,
             store: store::Store::new(),
             lib_icons: HashMap::new(),
             view: match std::env::args().nth(1).as_deref() {
@@ -571,8 +572,8 @@ impl App {
     fn redetect(&mut self) {
         let env = presets::Env::detect(&self.cfg.modules);
         self.presets = presets::all(&env);
-        self.devices = devices::Devices::new(&env.corsair);
-        if self.view == View::Devices && !self.cfg.module("corsair") {
+        self.devices = devices::Devices::new(&env, &self.cfg.modules);
+        if self.view == View::Devices && !["corsair", "openrgb", "headset"].iter().any(|m| self.cfg.module(m)) && env.batteries.is_empty() {
             self.view = View::Deck;
         }
     }
@@ -2182,6 +2183,26 @@ impl App {
         });
         if corsair && !self.devices.running {
             ui.label(RichText::new(t("OpenLinkHub no está corriendo. Instálalo y arráncalo: github.com/jurkovic-nikola/OpenLinkHub")).weak().size(12.5));
+        }
+        let mut rgb = self.cfg.module("openrgb");
+        setting(ui, card, t("Luces de cualquier marca"), t("Efecto, color y brillo de lo que controla OpenRGB: teclados, ratones, placas, RAM y tarjetas gráficas"), |ui| {
+            if toggle_switch(ui, &mut rgb) {
+                self.cfg.set_module("openrgb", rgb);
+                self.redetect();
+            }
+        });
+        if rgb && !fluxdeck_core::openrgb::running() {
+            ui.label(RichText::new(t("El servidor de OpenRGB no está corriendo. Ábrelo y pulsa Start Server en la pestaña SDK Server, o arráncalo con openrgb --server.")).weak().size(12.5));
+        }
+        let mut headsets = self.cfg.module("headset");
+        setting(ui, card, t("Auriculares de otras marcas"), t("Batería, retorno de voz y luces de auriculares Logitech, SteelSeries, HyperX y más, a través de HeadsetControl"), |ui| {
+            if toggle_switch(ui, &mut headsets) {
+                self.cfg.set_module("headset", headsets);
+                self.redetect();
+            }
+        });
+        if headsets && !fluxdeck_core::headset::installed() {
+            ui.label(RichText::new(t("HeadsetControl no está instalado: github.com/Sapd/HeadsetControl")).weak().size(12.5));
         }
         // Only on a Ryoku desktop; elsewhere there is nothing to integrate with.
         if fluxdeck_core::paths::ryoku_desktop() {

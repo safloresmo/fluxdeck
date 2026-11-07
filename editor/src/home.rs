@@ -45,7 +45,14 @@ fn gather(corsair_on: bool) -> Summary {
     let chain = effects::Chain::load();
     let all = plugins::installed();
     let on = plugins::enabled();
-    let (batteries, olh_running) = if corsair_on { (corsair::batteries(), corsair::running()) } else { (Vec::new(), false) };
+    let (mut batteries, olh_running) = if corsair_on { (corsair::batteries(), corsair::running()) } else { (Vec::new(), false) };
+    batteries.extend(fluxdeck_core::upower::batteries().into_iter().map(|b| (b.model.clone(), b.kind_code(), b.level)));
+    if fluxdeck_core::Config::load().is_ok_and(|c| c.module("headset")) {
+        // A Corsair headset already listed through OpenLinkHub is not shown twice.
+        let corsair_listed = !batteries.is_empty() && corsair_on;
+        let heads = fluxdeck_core::headset::headsets().into_iter().filter(|h| !(corsair_listed && h.vendor == "Corsair"));
+        batteries.extend(heads.filter_map(|h| Some((h.product.clone(), Some(2), h.battery?))));
+    }
     Summary {
         mic: default.as_deref().and_then(desc),
         mic_mode,

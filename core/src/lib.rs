@@ -4,7 +4,9 @@ pub mod catalogue;
 pub mod config;
 pub mod effects;
 pub mod groups;
+pub mod headset;
 pub mod mixer;
+pub mod openrgb;
 pub mod paths;
 pub mod plugins;
 pub mod corsair;
@@ -18,6 +20,7 @@ pub mod render;
 pub mod ryoku;
 pub mod state;
 pub mod streammix;
+pub mod upower;
 
 pub use config::{Config, Dial, Key, Page, Step, Theme};
 pub use image;

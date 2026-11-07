@@ -1,5 +1,8 @@
 mod backupcmd;
 mod corsaircmd;
+mod rgbcmd;
+mod batterycmd;
+mod headsetcmd;
 mod effectscmd;
 mod effectsrun;
 mod extrakeys;
@@ -75,6 +78,9 @@ fn main() {
         Some("xlr") => Some(xlr::command(&args[1..])),
         Some("pw") => Some(pwcmd::command(&args[1..])),
         Some("corsair") => Some(corsaircmd::command(&args[1..])),
+        Some("rgb") => Some(rgbcmd::command(&args[1..])),
+        Some("battery") => Some(batterycmd::command(&args[1..])),
+        Some("headset") => Some(headsetcmd::command(&args[1..])),
         Some("plugin") => Some(plugincmd::command(&args[1..])),
         Some("effects") => Some(effectscmd::command(&args[1..])),
         Some("mix") => Some(mixcmd::command(&args[1..])),

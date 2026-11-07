@@ -1,6 +1,6 @@
 //! Ready-made actions for the editor's library. Each group only appears when what it needs is installed.
 use crate::i18n::{t, tf};
-use crate::{Dial, Key, corsair, plugins, pw};
+use crate::{Dial, Key, corsair, headset, openrgb, plugins, pw, upower};
 use std::path::Path;
 
 #[derive(Clone)]
@@ -30,6 +30,12 @@ pub struct Env {
     pub filters: Vec<(String, String)>,
     /// Corsair devices seen by OpenLinkHub.
     pub corsair: Vec<corsair::Device>,
+    /// Lights OpenRGB controls.
+    pub rgb: Vec<openrgb::Device>,
+    /// Wireless peripherals with a battery, of any brand.
+    pub batteries: Vec<upower::Battery>,
+    /// Headsets HeadsetControl sees.
+    pub headsets: Vec<headset::Headset>,
     /// Installed plugins that can run here.
     pub plugins: Vec<plugins::Plugin>,
 }
@@ -59,6 +65,9 @@ impl Env {
             filters: pw::rnnoise_filters().into_iter().filter(|(f, _)| f.name != crate::effects::CAPTURE).filter_map(|(f, s)| Some((f.name, s?.name))).collect(),
             plugins: plugins::enabled().into_iter().filter(|p| p.missing().is_none()).collect(),
             corsair: if modules.iter().any(|m| m == "corsair") { corsair::devices() } else { Vec::new() },
+            rgb: if modules.iter().any(|m| m == "openrgb") { openrgb::devices() } else { Vec::new() },
+            batteries: upower::batteries(),
+            headsets: if modules.iter().any(|m| m == "headset") { headset::headsets() } else { Vec::new() },
         }
     }
 }
@@ -393,6 +402,91 @@ pub fn all(env: &Env) -> Vec<Preset> {
             );
         }
     }
+    for d in &env.rgb {
+        let (id, name) = (sq(&d.id), title(&d.id));
+        let mut push = |what: &'static str, item: Item| out.push(Preset { group: "OpenRGB".into(), name: tf(what, &[&name]), item });
+        if d.modes.len() > 1 {
+            push(
+                "Luces de {}",
+                Item::Dial(Dial {
+                    label: name.clone(),
+                    icon: '\u{f0335}'.to_string(),
+                    right: format!("fluxdeck rgb effect {id} next"),
+                    left: format!("fluxdeck rgb effect {id} prev"),
+                    status: format!("fluxdeck rgb effect {id}"),
+                    interval: 10.0,
+                    ..Default::default()
+                }),
+            );
+        }
+        if d.modes.iter().any(|m| m.name.eq_ignore_ascii_case("off")) {
+            push("Apagar las luces de {}", Item::Key(Key { label: name.clone(), icon: '\u{f0336}'.to_string(), command: format!("fluxdeck rgb effect {id} off"), ..Default::default() }));
+        }
+        if d.takes_color() {
+            let color = d.color().unwrap_or_else(|| "ffffff".into());
+            push(
+                "Color de {}",
+                Item::Key(Key { label: name.clone(), icon: '\u{f0266}'.to_string(), command: format!("fluxdeck rgb color {id} {color}"), status: format!("fluxdeck rgb color {id}"), interval: 10.0, ..Default::default() }),
+            );
+        }
+        if d.brightness().is_some() {
+            push(
+                "Brillo de {}",
+                Item::Dial(Dial {
+                    label: name.clone(),
+                    icon: '\u{f00e0}'.to_string(),
+                    right: format!("fluxdeck rgb brightness {id} up"),
+                    left: format!("fluxdeck rgb brightness {id} down"),
+                    status: format!("fluxdeck rgb brightness {id}"),
+                    interval: 10.0,
+                    ..Default::default()
+                }),
+            );
+        }
+    }
+    for b in &env.batteries {
+        let name = title(&b.model);
+        let key = Key { label: name.clone(), icon: corsair::icon(b.kind_code()).to_string(), status: format!("fluxdeck battery {}", sq(&b.model)), interval: 60.0, ..Default::default() };
+        out.push(Preset { group: t("Baterías").into(), name: tf("Batería de {}", &[&name]), item: Item::Key(key) });
+    }
+    for h in &env.headsets {
+        let (id, name) = (&h.id, title(&h.product));
+        let mut push = |what: &'static str, item: Item| out.push(Preset { group: t("Auriculares").into(), name: tf(what, &[&name]), item });
+        if h.battery.is_some() {
+            push(
+                "Batería de {}",
+                Item::Key(Key { label: name.clone(), icon: corsair::icon(Some(2)).to_string(), status: format!("fluxdeck headset battery {id}"), interval: 60.0, ..Default::default() }),
+            );
+        }
+        if h.has_sidetone {
+            push(
+                "Retorno de voz de {}",
+                Item::Dial(Dial {
+                    label: name.clone(),
+                    icon: '\u{f036c}'.to_string(),
+                    right: format!("fluxdeck headset sidetone {id} up"),
+                    left: format!("fluxdeck headset sidetone {id} down"),
+                    press: format!("fluxdeck headset sidetone {id} 0"),
+                    status: format!("fluxdeck headset sidetone {id}"),
+                    interval: 10.0,
+                    ..Default::default()
+                }),
+            );
+        }
+        if h.has_lights {
+            push(
+                "Luces de {}",
+                Item::Key(Key {
+                    label: name.clone(),
+                    icon: '\u{f0335}'.to_string(),
+                    command: format!("fluxdeck headset lights {id} toggle"),
+                    status: format!("fluxdeck headset lights {id}"),
+                    interval: 30.0,
+                    ..Default::default()
+                }),
+            );
+        }
+    }
     for p in &env.plugins {
         for a in &p.manifest.actions {
             let icon = plugins::image_file(&p.path, &a.icon).or_else(|| a.states.first().and_then(|s| plugins::image_file(&p.path, &s.image)));
@@ -409,6 +503,11 @@ pub fn all(env: &Env) -> Vec<Preset> {
         }
     }
     out
+}
+
+/// A shell word that keeps spaces and quotes.
+fn sq(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// "VIRTUOSO MAX" → "Virtuoso Max", keeping model codes such as K100 as they are.

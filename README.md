@@ -45,6 +45,7 @@ servicio; el editor por ahora dibuja la distribución del +.
 
 **Periféricos y más**
 - Módulo Corsair (a través de OpenLinkHub): batería, cancelación de ruido y luces.
+- Otras marcas: luces con OpenRGB, auriculares con HeadsetControl y baterías inalámbricas con UPower.
 - Inicio con el estado de todo, avisos y controles rápidos del micrófono y los grupos; tema del
   escritorio, oscuro, claro o propio; español e inglés.
 - Perfiles que cambian página, volúmenes o un comando según la app que usas; se crean desde una
@@ -234,6 +235,33 @@ fluxdeck corsair battery SERIE
 fluxdeck corsair anc SERIE cycle
 fluxdeck corsair brightness SERIE up
 fluxdeck corsair effect SERIE next
+```
+
+## Periféricos de otras marcas (opcional)
+
+FluxDeck no habla con cada marca por su cuenta: usa los programas de Linux que ya las conocen.
+Cada uno agrega sus tarjetas a la vista **Periféricos** y sus acciones a la biblioteca.
+
+- **Luces** (Logitech, Razer, SteelSeries, ASUS, MSI, Gigabyte, memorias RAM y más): con
+  [OpenRGB](https://openrgb.org) abierto y su servidor SDK encendido (pestaña *SDK Server*, o
+  `openrgb --server`). Se activa en *Módulos* o con `"openrgb"` en `modules`. Efecto, color y brillo.
+- **Auriculares** (Logitech, SteelSeries, HyperX, Corsair y
+  [otros](https://github.com/Sapd/HeadsetControl#supported-headsets)): con
+  [HeadsetControl](https://github.com/Sapd/HeadsetControl) instalado. Se activa en *Módulos* o con
+  `"headset"` en `modules`. Batería, retorno de voz y luces.
+- **Baterías** de ratones, teclados y controles inalámbricos: siempre, si UPower las ve (los
+  Logitech con receptor Unifying o Lightspeed y lo conectado por Bluetooth, por ejemplo).
+
+```sh
+fluxdeck rgb list
+fluxdeck rgb effect 'NOMBRE' next
+fluxdeck rgb color 'NOMBRE' ff8800
+fluxdeck rgb brightness 'NOMBRE' up
+fluxdeck headset list
+fluxdeck headset sidetone VENDOR:PRODUCT up
+fluxdeck headset lights VENDOR:PRODUCT toggle
+fluxdeck battery list
+fluxdeck battery 'MODELO'
 ```
 
 ## Efectos del micrófono
