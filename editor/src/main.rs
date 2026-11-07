@@ -784,6 +784,10 @@ impl App {
         if !self.mic.notice.is_empty() {
             self.notice = std::mem::take(&mut self.mic.notice);
         }
+        if let Some(m) = self.devices.enable.take() {
+            self.cfg.set_module(m, true);
+            self.redetect();
+        }
         if !self.devices.notice.is_empty() {
             self.notice = std::mem::take(&mut self.devices.notice);
         }

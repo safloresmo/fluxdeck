@@ -241,6 +241,9 @@ fluxdeck corsair effect SERIE next
 
 FluxDeck no habla con cada marca por su cuenta: usa los programas de Linux que ya las conocen.
 Cada uno agrega sus tarjetas a la vista **Periféricos** y sus acciones a la biblioteca.
+Si hay conectado un aparato cuyo programa falta o está apagado, **Periféricos** lo dice y ofrece
+abrir una terminal con el comando listo (se ejecuta al pulsar Enter), abrir el programa o activar
+el módulo.
 
 - **Luces** (Logitech, Razer, SteelSeries, ASUS, MSI, Gigabyte, memorias RAM y más): con
   [OpenRGB](https://openrgb.org) abierto y su servidor SDK encendido (pestaña *SDK Server*, o

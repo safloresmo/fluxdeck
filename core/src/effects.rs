@@ -375,7 +375,7 @@ pub const PACKS: &[Pack] = &[
     },
 ];
 
-fn on_path(cmd: &str) -> bool {
+pub(crate) fn on_path(cmd: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
 }
 
@@ -412,9 +412,13 @@ impl Pack {
     }
 }
 
-/// Opens the user's terminal running `cmd`, so they can read it and type their password.
+/// Opens the user's terminal showing `cmd`; it runs when they press Enter, and they type their password there.
 pub fn run_in_terminal(cmd: &str) -> Result<(), String> {
-    let wrapped = format!("{cmd}; echo; read -r -p '{}' _", crate::i18n::t("Listo. Pulsa Enter para cerrar."));
+    let wrapped = format!(
+        "printf '\\n  %s\\n\\n' \"$1\"; read -r -p '{}' _ && bash -c \"$1\"; echo; read -r -p '{}' _",
+        crate::i18n::t("Pulsa Enter para ejecutarlo, o cierra la ventana para cancelar. "),
+        crate::i18n::t("Listo. Pulsa Enter para cerrar.")
+    );
     let terms: [(&str, &[&str]); 8] = [
         ("kitty", &[]),
         ("foot", &[]),
@@ -426,7 +430,7 @@ pub fn run_in_terminal(cmd: &str) -> Result<(), String> {
         ("xterm", &["-e"]),
     ];
     let (term, pre) = terms.iter().find(|(t, _)| on_path(t)).ok_or_else(|| crate::i18n::t("No encontré una terminal para instalarlo.").to_string())?;
-    std::process::Command::new(term).args(*pre).args(["sh", "-c", &wrapped]).spawn().map(|_| ()).map_err(|e| e.to_string())
+    std::process::Command::new(term).args(*pre).args(["bash", "-c", &wrapped, "bash", cmd]).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

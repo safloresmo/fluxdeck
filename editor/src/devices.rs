@@ -3,6 +3,7 @@
 use crate::mic::{card_frame, toggle};
 use fluxdeck_core::corsair::{self, LEVELS, Live};
 use fluxdeck_core::presets::{Env, title};
+use fluxdeck_core::helpers::{self, Fix, Need, State};
 use fluxdeck_core::{headset, openrgb, upower};
 use fluxdeck_core::i18n::{t, tf};
 use eframe::egui::{self, Color32, RichText, Sense, vec2};
@@ -42,6 +43,8 @@ struct Others {
     rgb: Vec<openrgb::Device>,
     batteries: Vec<upower::Battery>,
     headsets: Vec<headset::Headset>,
+    /// Programs the connected peripherals need.
+    needs: Vec<Need>,
 }
 
 pub struct Devices {
@@ -57,6 +60,9 @@ pub struct Devices {
     errors: Arc<Mutex<Vec<String>>>,
     pub running: bool,
     pub notice: String,
+    modules: Vec<String>,
+    /// A module the user asked to switch on from a suggestion, for the app to apply.
+    pub enable: Option<&'static str>,
 }
 
 impl Devices {
@@ -79,7 +85,7 @@ impl Devices {
                         *latest.lock().unwrap() = Some(all);
                         let rgb = if rgb_on { openrgb::devices() } else { Vec::new() };
                         let headsets = if headset_on { headset::headsets() } else { Vec::new() };
-                        *latest_others.lock().unwrap() = Some(Others { rgb, batteries: upower::batteries(), headsets });
+                        *latest_others.lock().unwrap() = Some(Others { rgb, batteries: upower::batteries(), headsets, needs: helpers::needs() });
                     }
                     std::thread::sleep(Duration::from_millis(1500));
                 }
@@ -123,7 +129,9 @@ impl Devices {
             list: list.to_vec(),
             shown: HashMap::new(),
             latest,
-            others: Others { rgb: env.rgb.clone(), batteries: env.batteries.clone(), headsets: env.headsets.clone() },
+            others: Others { rgb: env.rgb.clone(), batteries: env.batteries.clone(), headsets: env.headsets.clone(), needs: helpers::needs() },
+            modules: modules.to_vec(),
+            enable: None,
             latest_others,
             corsair_on: modules.iter().any(|m| m == "corsair"),
             active,
@@ -161,7 +169,19 @@ impl Devices {
         }
         ui.ctx().request_repaint_after(Duration::from_millis(500));
         ui.add_space(20.0);
-        if self.corsair_on && self.list.is_empty() {
+        let needs: Vec<Need> = self.others.needs.iter().filter(|n| n.state != State::Ready || !self.modules.iter().any(|m| m == n.helper.module())).cloned().collect();
+        for n in &needs {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                card_frame(card).show(ui, |ui| {
+                    ui.set_width((ui.available_width() - 20.0).min(760.0));
+                    ui.vertical(|ui| self.need_card(ui, n, accent));
+                });
+            });
+            ui.add_space(12.0);
+        }
+        let olh_suggested = needs.iter().any(|n| n.helper == helpers::Helper::OpenLinkHub);
+        if self.corsair_on && self.list.is_empty() && !olh_suggested {
             let msg = if self.running { t("OpenLinkHub no ve ningún aparato Corsair.") } else { t("OpenLinkHub no está corriendo. Instálalo y arráncalo: github.com/jurkovic-nikola/OpenLinkHub") };
             ui.vertical_centered(|ui| ui.label(RichText::new(msg).weak()));
             ui.add_space(12.0);
@@ -206,6 +226,55 @@ impl Devices {
                     });
                 });
                 ui.add_space(12.0);
+            }
+        });
+    }
+
+    fn need_card(&mut self, ui: &mut egui::Ui, n: &Need, accent: Color32) {
+        let name = n.helper.name();
+        let devices = n.devices.iter().map(|d| title(d)).collect::<Vec<_>>().join(", ");
+        ui.label(RichText::new(tf("Conectado: {}", &[&devices])).size(15.0).strong());
+        let what = match n.state {
+            State::Missing => tf("Para controlarlo hace falta {}, que no está instalado.", &[name]),
+            State::Stopped => tf("Para controlarlo hace falta {}, que está instalado pero no está corriendo.", &[name]),
+            State::Ready => tf("{} está listo. Activa su módulo para controlarlo desde aquí.", &[name]),
+        };
+        ui.label(what);
+        ui.add_space(6.0);
+        if let Some(Fix::Terminal(cmd)) = &n.fix {
+            ui.label(RichText::new(cmd).monospace().color(accent));
+            ui.add_space(4.0);
+        }
+        ui.horizontal(|ui| {
+            match &n.fix {
+                Some(Fix::Terminal(cmd)) => {
+                    if ui.button(t("Abrir terminal con el comando")).on_hover_text(t("Se ejecuta cuando pulses Enter; ahí escribes tu contraseña")).clicked()
+                        && let Err(e) = fluxdeck_core::effects::run_in_terminal(cmd)
+                    {
+                        self.notice = e;
+                    }
+                    if ui.button(t("Copiar comando")).clicked() {
+                        ui.ctx().copy_text(cmd.clone());
+                        self.notice = t("Comando copiado: pégalo en una terminal").into();
+                    }
+                }
+                Some(Fix::Launch(args)) => {
+                    if ui.button(tf("Abrir {}", &[name])).clicked()
+                        && let Err(e) = std::process::Command::new(&args[0]).args(&args[1..]).spawn()
+                    {
+                        self.notice = e.to_string();
+                    }
+                }
+                Some(Fix::Page(url)) => {
+                    if ui.button(t("Ver cómo instalarlo")).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    }
+                }
+                None => {}
+            }
+            let module = n.helper.module();
+            if !self.modules.iter().any(|m| m == module) && ui.button(t("Activar módulo")).clicked() {
+                self.enable = Some(module);
             }
         });
     }

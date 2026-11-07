@@ -5,6 +5,7 @@ pub mod config;
 pub mod effects;
 pub mod groups;
 pub mod headset;
+pub mod helpers;
 pub mod mixer;
 pub mod openrgb;
 pub mod paths;
