@@ -6,6 +6,10 @@ use std::{fs, io};
 #[serde(default)]
 pub struct Config {
     pub brightness: u8,
+    /// Minutes without touching the deck before it goes dark; 0 keeps it on. It also goes dark while
+    /// the session is locked or the computer sleeps.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub sleep_after: u32,
     /// Font family resolved through fontconfig; Nerd Font glyphs fall back to any installed Nerd Font.
     pub font: String,
     pub theme: Theme,
@@ -144,6 +148,10 @@ fn is_one(v: &f32) -> bool {
     *v == 1.0
 }
 
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
@@ -152,6 +160,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             brightness: 60,
+            sleep_after: 0,
             font: "sans-serif".into(),
             theme: Theme::default(),
             palette: String::new(),

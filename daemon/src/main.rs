@@ -1,5 +1,7 @@
 mod backupcmd;
 mod corsaircmd;
+mod focus;
+mod lock;
 mod rgbcmd;
 mod batterycmd;
 mod headsetcmd;
@@ -122,6 +124,7 @@ fn daemon() {
     groupsrun::start();
     streamrun::start();
     profilesrun::start(tx.clone());
+    lock::start();
     extrakeys::start(tx.clone());
     tray::start(tx.clone());
     let host = Host::start(tx.clone());
@@ -209,6 +212,41 @@ fn first_line(out: &[u8]) -> String {
     String::from_utf8_lossy(out).lines().next().unwrap_or("").trim().to_string()
 }
 
+/// How long a status command may take before it is stopped.
+const STATUS_LIMIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 });
+
+/// The first line a status command prints. One that hangs is killed with everything it started,
+/// so its key keeps updating.
+fn status_text(cmd: &str) -> String {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let mut child = match shell(cmd, 0).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0).spawn() {
+        Ok(c) => c,
+        Err(e) => return format!("error: {e}"),
+    };
+    let Some(mut out) = child.stdout.take() else { return String::new() };
+    let (done, got) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        let _ = done.send(buf);
+    });
+    // Output ends when every process holding the pipe has exited, not only the shell.
+    match got.recv_timeout(STATUS_LIMIT) {
+        Ok(buf) => {
+            let _ = child.wait();
+            first_line(&buf)
+        }
+        Err(_) => {
+            // SAFETY: kill(2) on our own child's process group; no memory is touched.
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+            let _ = child.wait();
+            eprintln!("fluxdeck: status command took over {}s and was stopped: {cmd}", STATUS_LIMIT.as_secs());
+            "…".into()
+        }
+    }
+}
+
 pub(crate) use fluxdeck_core::apps::shell;
 
 struct Session {
@@ -234,6 +272,11 @@ struct Session {
     /// Modification time of the palette file, checked once a second.
     palette_seen: (Instant, Option<std::time::SystemTime>),
     dirty: bool,
+    last_input: Instant,
+    /// Dark for the lock, sleep or `sleep_after`.
+    asleep: bool,
+    /// Keys and dials whose press woke the deck: their release is dropped too.
+    swallowed: HashSet<Slot>,
     host: Option<Host>,
     /// What plugins asked to show, by instance.
     looks: HashMap<String, Look>,
@@ -319,6 +362,9 @@ impl Session {
             published: None,
             palette_seen: (Instant::now(), None),
             dirty: true,
+            last_input: Instant::now(),
+            asleep: false,
+            swallowed: HashSet::new(),
         }
     }
 
@@ -348,6 +394,7 @@ impl Session {
                     }
                 }
             }
+            self.sleep_check()?;
             // A phone started watching: send it every image once.
             if remote::take_refresh(&self.view) {
                 self.sent.clear();
@@ -449,6 +496,7 @@ impl Session {
             h.launch();
         }
         if cfg.brightness != self.cfg.brightness
+            && !self.asleep
             && let Some(d) = &self.deck
         {
             d.set_brightness(cfg.brightness)?;
@@ -677,7 +725,33 @@ impl Session {
         img
     }
 
+    /// Darkens or lights the deck when the lock, sleep or idle time says so.
+    fn sleep_check(&mut self) -> Result<(), StreamDeckError> {
+        let idle = self.cfg.sleep_after > 0 && self.last_input.elapsed() > Duration::from_secs(self.cfg.sleep_after as u64 * 60);
+        let dark = lock::dark() || idle;
+        if dark != self.asleep {
+            self.asleep = dark;
+            if let Some(d) = &self.deck {
+                d.set_brightness(if dark { 0 } else { self.cfg.brightness })?;
+            }
+        }
+        Ok(())
+    }
+
     fn input(&mut self, ev: DeviceStateUpdate) {
+        self.last_input = Instant::now();
+        // A dark deck only wakes up: the touch that wakes it, and anything while locked, runs nothing.
+        match ev {
+            DeviceStateUpdate::ButtonDown(i) if self.asleep => drop(self.swallowed.insert(Slot::Key(i))),
+            DeviceStateUpdate::EncoderDown(i) if self.asleep => drop(self.swallowed.insert(Slot::Dial(i))),
+            DeviceStateUpdate::ButtonUp(i) if self.swallowed.remove(&Slot::Key(i)) => {}
+            DeviceStateUpdate::EncoderUp(i) if self.swallowed.remove(&Slot::Dial(i)) => {}
+            _ if self.asleep => {}
+            ev => self.act_on(ev),
+        }
+    }
+
+    fn act_on(&mut self, ev: DeviceStateUpdate) {
         let page = &self.cfg.pages[self.page];
         match ev {
             DeviceStateUpdate::ButtonDown(i) => {
@@ -842,7 +916,7 @@ impl Session {
                 Err(e) => eprintln!("fluxdeck: cannot run `{cmd}`: {e}"),
             }
             if let Some(s) = status {
-                let text = shell(&s, 0).output().map(|o| first_line(&o.stdout)).unwrap_or_default();
+                let text = status_text(&s);
                 let _ = tx.send(Msg::Status { generation, slot, text });
             }
         });
@@ -860,12 +934,8 @@ impl Session {
             self.busy.insert(slot);
             self.due.insert(slot, now + Duration::from_secs_f32(every.max(0.2)));
             let (tx, generation) = (self.tx.clone(), self.generation);
-            // shortcut: a status command that never exits keeps its slot frozen; add a timeout if that bites.
             thread::spawn(move || {
-                let text = match shell(&cmd, 0).output() {
-                    Ok(o) => first_line(&o.stdout),
-                    Err(e) => format!("error: {e}"),
-                };
+                let text = status_text(&cmd);
                 let _ = tx.send(Msg::Status { generation, slot, text });
             });
         }
@@ -1068,6 +1138,14 @@ fn model_name(kind: Kind) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_commands_are_cut_off() {
+        assert_eq!(super::status_text("echo 42%; echo second"), "42%");
+        // A child left in the background holding the output does not block the reading.
+        let start = std::time::Instant::now();
+        assert_eq!(super::status_text("echo hi; sleep 30 &"), "…");
+        assert!(start.elapsed() < super::STATUS_LIMIT + std::time::Duration::from_secs(2));
+    }
     #[test]
     fn reads_levels_from_status_lines() {
         assert_eq!(super::status_level("Música 28%|0.28"), Some(0.28));

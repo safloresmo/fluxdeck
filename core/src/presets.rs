@@ -22,7 +22,8 @@ pub struct Env {
     /// Hyprland configured in Lua, where dispatchers are written as hl.dsp calls.
     pub hypr_lua: bool,
     pub playerctl: bool,
-    pub screenshot: bool,
+    /// A command that captures a region to the clipboard with this desktop's own tool.
+    pub screenshot: Option<String>,
     pub terminal: Option<String>,
     /// PipeWire source of an Elgato XLR Dock.
     pub dock: Option<String>,
@@ -52,7 +53,7 @@ impl Env {
             hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
             hypr_lua: crate::config::dir().with_file_name("hypr").join("hyprland.lua").exists(),
             playerctl: has("playerctl"),
-            screenshot: has("grim") && has("slurp") && has("wl-copy"),
+            screenshot: screenshot_command(&std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(), has),
             terminal: ["kitty", "alacritty", "foot", "wezterm", "ghostty", "konsole", "gnome-terminal", "xterm"]
                 .into_iter()
                 .find(|t| has(t))
@@ -186,8 +187,8 @@ pub fn all(env: &Env) -> Vec<Preset> {
     add("Sistema", "Uso de CPU", key("CPU", '\u{f0ee0}', "", "top -bn1 | awk '/^%Cpu/ { print int(100 - $8) \"%\" }'", 2.0));
     add("Sistema", "Uso de RAM", key("RAM", '\u{f035b}', "", "free | awk '/^Mem/ { print int($3 / $2 * 100) \"%\" }'", 3.0));
     add("Sistema", "Bloquear sesión", key("Bloquear", '\u{f033e}', "loginctl lock-session", "", 0.0));
-    if env.screenshot {
-        add("Sistema", "Captura de una zona", key("Captura", '\u{f0e51}', "grim -g \"$(slurp)\" - | wl-copy", "", 0.0));
+    if let Some(cmd) = &env.screenshot {
+        add("Sistema", "Captura de una zona", key("Captura", '\u{f0e51}', cmd, "", 0.0));
     }
 
     add("Audio", "Volumen de salida", wpctl_dial("Volumen", '\u{f057e}', "@DEFAULT_AUDIO_SINK@"));
@@ -505,6 +506,22 @@ pub fn all(env: &Env) -> Vec<Preset> {
     out
 }
 
+/// The desktop's own region capture, copied to the clipboard; `has` says whether a command exists.
+fn screenshot_command(desktop: &str, has: impl Fn(&str) -> bool) -> Option<String> {
+    let d = desktop.to_ascii_lowercase();
+    let tools: [(bool, &[&str], &str); 7] = [
+        (d.contains("kde"), &["spectacle"], "spectacle -r -b -c -n"),
+        (d.contains("gnome"), &["gnome-screenshot"], "gnome-screenshot -a -c"),
+        (d.contains("xfce"), &["xfce4-screenshooter"], "xfce4-screenshooter -r -c"),
+        // wlroots compositors: Hyprland, Sway, niri, river…
+        (true, &["grim", "slurp", "wl-copy"], "grim -g \"$(slurp)\" - | wl-copy"),
+        (true, &["flameshot"], "flameshot gui"),
+        (true, &["spectacle"], "spectacle -r -b -c -n"),
+        (true, &["maim", "xclip"], "maim -s | xclip -selection clipboard -t image/png"),
+    ];
+    tools.iter().find(|(fits, needs, _)| *fits && needs.iter().all(|n| has(n))).map(|(_, _, cmd)| cmd.to_string())
+}
+
 /// A shell word that keeps spaces and quotes.
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -521,6 +538,17 @@ pub fn title(product: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn screenshot_follows_the_desktop() {
+        use super::screenshot_command as cmd;
+        let all = |_: &str| true;
+        assert_eq!(cmd("KDE", all).as_deref(), Some("spectacle -r -b -c -n"));
+        assert_eq!(cmd("ubuntu:GNOME", all).as_deref(), Some("gnome-screenshot -a -c"));
+        assert!(cmd("Hyprland", all).unwrap().starts_with("grim"));
+        assert_eq!(cmd("GNOME", |c| c == "flameshot").as_deref(), Some("flameshot gui"));
+        assert_eq!(cmd("X-Cinnamon", |_| false), None);
+    }
+
     #[test]
     fn app_controls_read_back() {
         assert_eq!(super::app_of(&super::app_dial("Spotify").status).as_deref(), Some("Spotify"));

@@ -1,4 +1,4 @@
-//! Switches profiles with the focused window, from Hyprland's event socket.
+//! Switches profiles with the focused window, on any desktop `focus` can follow.
 //! Entering a profile shows its deck page, sets its group volumes and runs its command; leaving puts
 //! the page and volumes back when the profile says so.
 use crate::Msg;
@@ -6,41 +6,16 @@ use fluxdeck_core::groups::{self, Level};
 use fluxdeck_core::profiles::{self, Profile};
 use fluxdeck_core::{Config, mixer};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
-
-fn socket() -> Option<PathBuf> {
-    let run = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("hypr");
-    if let Some(sig) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") {
-        let p = run.join(sig).join(".socket2.sock");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    // The service may start before the session exports the signature: take the newest instance.
-    std::fs::read_dir(run).ok()?.flatten().map(|e| e.path().join(".socket2.sock")).filter(|p| p.exists()).max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-}
 
 pub fn start(tx: Sender<Msg>) {
     std::thread::spawn(move || {
         let mut state = Switcher { tx, active: None, saved: BTreeMap::new() };
         loop {
-            match socket().and_then(|p| UnixStream::connect(p).ok()) {
-                Some(stream) => {
-                    for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                        if let Some(rest) = line.strip_prefix("activewindow>>") {
-                            let (class, title) = rest.split_once(',').unwrap_or((rest, ""));
-                            state.focus(class, title);
-                        }
-                    }
-                }
-                // Not on Hyprland, or it restarted: look again later.
-                None => std::thread::sleep(Duration::from_secs(10)),
-            }
-            std::thread::sleep(Duration::from_secs(2));
+            // No source here yet (or the desktop restarted): look again later.
+            let followed = crate::focus::follow(&mut |class, title| state.focus(class, title));
+            std::thread::sleep(Duration::from_secs(if followed { 2 } else { 10 }));
         }
     });
 }

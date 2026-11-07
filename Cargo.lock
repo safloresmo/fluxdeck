@@ -1198,6 +1198,7 @@ dependencies = [
  "notify",
  "serde_json",
  "tungstenite",
+ "zbus",
 ]
 
 [[package]]

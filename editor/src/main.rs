@@ -1068,6 +1068,19 @@ impl App {
             ui.add_space(24.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(t("Cambian solos cuando usas ciertas apps: la página del deck, el volumen de tus grupos o un comando. Al salir, todo vuelve como estaba.")).weak().size(13.0));
+                // The service says which desktop it follows; some cannot tell which window is active.
+                match std::fs::read_to_string(fluxdeck_core::paths::runtime("focus")).unwrap_or_default().as_str() {
+                    "gnome-missing" => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(t("GNOME no dice qué ventana está activa: instala la extensión Focused Window D-Bus para que los perfiles cambien solos.")).color(Color32::from_rgb(229, 160, 72)).size(13.0));
+                            ui.hyperlink_to(t("Abrir la extensión"), "https://extensions.gnome.org/extension/5592/focused-window-d-bus/");
+                        });
+                    }
+                    "none" => {
+                        ui.label(RichText::new(t("Este escritorio no dice qué ventana está activa, así que los perfiles no cambian solos. Funcionan en Hyprland, Sway, i3, niri, KDE Plasma, GNOME (con una extensión) y escritorios X11.")).color(Color32::from_rgb(229, 160, 72)).size(13.0));
+                    }
+                    _ => {}
+                }
             });
         });
         ui.add_space(14.0);
@@ -1828,6 +1841,15 @@ impl App {
         }
         setting(ui, card, t("Brillo del deck"), t("Se aplica al soltar la barra"), |ui| {
             ui.add(egui::Slider::new(&mut self.cfg.brightness, 0..=100).suffix("%"));
+        });
+        setting(ui, card, t("Apagar el deck"), t("Tras un rato sin tocarlo. También se apaga al bloquear la sesión o suspender; el primer toque solo lo despierta"), |ui| {
+            let options = [(0, t("Nunca")), (5, "5 min"), (10, "10 min"), (30, "30 min"), (60, "1 h")];
+            let shown = options.iter().find(|(m, _)| *m == self.cfg.sleep_after).map_or_else(|| format!("{} min", self.cfg.sleep_after), |(_, n)| n.to_string());
+            egui::ComboBox::from_id_salt("sleep").selected_text(shown).show_ui(ui, |ui| {
+                for (m, name) in options {
+                    ui.selectable_value(&mut self.cfg.sleep_after, m, name);
+                }
+            });
         });
         setting(ui, card, t("Idioma"), t("Cambia al abrir de nuevo FluxDeck"), |ui| {
             let names = [("", t("Del sistema")), ("es", "Español"), ("en", "English")];
@@ -2744,16 +2766,10 @@ pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> bool {
 }
 
 /// Open windows on Hyprland, one per class.
+/// (class, title) of windows used lately, as the service saw them on any desktop.
 fn open_windows() -> Vec<(String, String)> {
-    let Ok(out) = Command::new("hyprctl").args(["clients", "-j"]).output() else { return Vec::new() };
-    let all: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    let mut seen: Vec<(String, String)> = Vec::new();
-    for c in all {
-        let class = c["class"].as_str().unwrap_or_default().to_string();
-        if !class.is_empty() && !seen.iter().any(|(k, _)| *k == class) {
-            seen.push((class, c["title"].as_str().unwrap_or_default().to_string()));
-        }
-    }
+    let saved = std::fs::read_to_string(fluxdeck_core::paths::runtime("windows")).unwrap_or_default();
+    let mut seen: Vec<(String, String)> = saved.lines().filter_map(|l| l.split_once('\t')).map(|(c, t)| (c.to_string(), t.to_string())).collect();
     seen.sort();
     seen
 }

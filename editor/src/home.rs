@@ -19,6 +19,8 @@ pub enum Go {
 
 #[derive(Clone, Default)]
 struct Summary {
+    /// Why audio features cannot work here, when they cannot.
+    no_pipewire: Option<&'static str>,
     /// Description of the microphone apps use, and how it is processed.
     mic: Option<String>,
     mic_mode: &'static str,
@@ -53,7 +55,17 @@ fn gather(corsair_on: bool) -> Summary {
         let heads = fluxdeck_core::headset::headsets().into_iter().filter(|h| !(corsair_listed && h.vendor == "Corsair"));
         batteries.extend(heads.filter_map(|h| Some((h.product.clone(), Some(2), h.battery?))));
     }
+    // PipeWire always lists some node; none means it is missing or something else serves the sound.
+    let no_pipewire = nodes.is_empty().then(|| {
+        let pulse = std::process::Command::new("pactl").arg("info").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("Server Name: pulseaudio"));
+        if pulse {
+            "Este sistema usa PulseAudio: el volumen, el mezclador y los efectos del micrófono necesitan PipeWire."
+        } else {
+            "No encuentro PipeWire (pw-cli y wpctl): el volumen, el mezclador y los efectos del micrófono no funcionan. Instala pipewire y wireplumber."
+        }
+    });
     Summary {
+        no_pipewire,
         mic: default.as_deref().and_then(desc),
         mic_mode,
         effects: chain.map_or(0, |c| c.effects.iter().filter(|e| e.enabled).count()),
@@ -113,6 +125,9 @@ impl Home {
             alerts.push((red, t("El servicio está apagado: el deck, los plugins y los efectos no funcionan.").into(), Some((t("Iniciar servicio"), Go::StartService))));
         } else if deck.is_none() {
             alerts.push((amber, t("No hay ningún Stream Deck conectado.").into(), None));
+        }
+        if let Some(why) = s.no_pipewire {
+            alerts.push((red, t(why).into(), None));
         }
         if corsair_on && !s.olh_running {
             alerts.push((amber, t("OpenLinkHub no está corriendo: los periféricos Corsair no responden.").into(), Some((t("Ver periféricos"), Go::Devices))));

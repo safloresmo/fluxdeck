@@ -49,14 +49,20 @@ servicio; el editor por ahora dibuja la distribución del +.
 - Inicio con el estado de todo, avisos y controles rápidos del micrófono y los grupos; tema del
   escritorio, oscuro, claro o propio; español e inglés.
 - Perfiles que cambian página, volúmenes o un comando según la app que usas; se crean desde una
-  ventana abierta.
+  ventana usada hace poco. Siguen la ventana activa en Hyprland, Sway, i3, niri, KDE Plasma,
+  escritorios X11 (XFCE, Cinnamon, MATE…) y GNOME con la extensión
+  [Focused Window D-Bus](https://extensions.gnome.org/extension/5592/focused-window-d-bus/).
+- El deck se apaga al bloquear la sesión o suspender, y si quieres tras un rato sin tocarlo.
 - Respaldo de toda la configuración en un archivo.
 - Ícono en la bandeja; al arrancar con la sesión no abre ninguna ventana.
 - En Ryoku, instala y muestra desde los ajustes un widget para la barra, que se distribuye aparte.
 
 ## Instalación
 
-Necesitas `fontconfig`, `libudev` (systemd), PipeWire con `wpctl`, `pw-dump` y `pw-record`.
+Funciona en cualquier distribución con glibc 2.35 o más nueva (Ubuntu 22.04+, Debian 12+,
+Fedora 36+, Arch, openSUSE Tumbleweed…). Necesitas `fontconfig`, `libudev` (systemd) y PipeWire
+con `wpctl`, `pw-dump` y `pw-record`: el volumen, el mezclador y los efectos no funcionan con
+PulseAudio solo (Ubuntu 22.04 lo trae de serie; desde 22.10 ya viene PipeWire).
 
 Ya compilado (Linux x86_64): descarga `fluxdeck-<versión>-x86_64-linux.tar.gz` de
 [Releases](https://github.com/safloresmo/fluxdeck/releases), descomprímelo y, dentro de su carpeta:
