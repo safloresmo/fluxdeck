@@ -95,5 +95,5 @@ jobs:
           fi
           echo "### ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
           for n in $names; do
-            if have "$n"; then echo "- $n: yes" >> "$GITHUB_STEP_SUMMARY"; else echo "- $n: **missing**" >> "$GITHUB_STEP_SUMMARY"; fi
+            if have "$n"; then echo "- $n: yes"; else echo "- $n: **missing**"; fi | tee -a "$GITHUB_STEP_SUMMARY"
           done
