@@ -23,8 +23,13 @@ servicio; el editor por ahora dibuja la distribución del +.
 
 ## Qué hace
 
+Es modular: en *Ajustes → Extensiones → Qué usas* (y la primera vez que lo abres) eliges qué
+partes quieres: deck, deck en el celular, micrófono, mezclador y grupos, periféricos, perfiles y
+plugins. Lo que apagas desaparece del editor y no corre en el servicio.
+
 **Deck**
 - Teclas y perillas con comandos, páginas, estados en vivo (`texto|nivel|#color`) y medidores.
+- Cada tecla puede hacer otra cosa al mantenerla pulsada medio segundo.
 - Biblioteca de acciones: sistema, audio, multimedia, Hyprland, XLR Dock, efectos, Corsair.
   Solo aparece lo que existe en tu equipo.
 - Arrastrar y soltar, copiar y pegar, deshacer, menú de clic derecho, duplicar páginas.

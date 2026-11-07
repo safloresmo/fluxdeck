@@ -111,7 +111,7 @@ impl Home {
 
     /// `audio` draws the quick audio controls inside their card.
     #[allow(clippy::too_many_arguments)]
-    pub fn ui(&self, ui: &mut egui::Ui, card: Color32, accent: Color32, service_up: bool, live: Option<&State>, corsair_on: bool, audio: impl FnOnce(&mut egui::Ui)) -> Option<Go> {
+    pub fn ui(&self, ui: &mut egui::Ui, card: Color32, accent: Color32, service_up: bool, live: Option<&State>, corsair_on: bool, uses: &dyn Fn(&str) -> bool, audio: impl FnOnce(&mut egui::Ui)) -> Option<Go> {
         ui.ctx().request_repaint_after(Duration::from_secs(1));
         let s = self.latest.lock().unwrap().clone();
         let red = Color32::from_rgb(229, 72, 77);
@@ -123,19 +123,19 @@ impl Home {
         let mut alerts: Vec<(Color32, String, Option<(&str, Go)>)> = Vec::new();
         if !service_up {
             alerts.push((red, t("El servicio está apagado: el deck, los plugins y los efectos no funcionan.").into(), Some((t("Iniciar servicio"), Go::StartService))));
-        } else if deck.is_none() {
+        } else if deck.is_none() && uses("deck") {
             alerts.push((amber, t("No hay ningún Stream Deck conectado.").into(), None));
         }
-        if let Some(why) = s.no_pipewire {
+        if let Some(why) = s.no_pipewire.filter(|_| uses("mic") || uses("mixer")) {
             alerts.push((red, t(why).into(), None));
         }
-        if corsair_on && !s.olh_running {
+        if uses("devices") && corsair_on && !s.olh_running {
             alerts.push((amber, t("OpenLinkHub no está corriendo: los periféricos Corsair no responden.").into(), Some((t("Ver periféricos"), Go::Devices))));
         }
-        for (name, _, level) in s.batteries.iter().filter(|b| b.2 <= 20) {
+        for (name, _, level) in s.batteries.iter().filter(|b| b.2 <= 20 && uses("devices")) {
             alerts.push((amber, tf("Batería baja en {}: {}%", &[name, &level.to_string()]), None));
         }
-        for p in &s.plugins_broken {
+        for p in s.plugins_broken.iter().filter(|_| uses("plugins")) {
             alerts.push((amber, tf("El plugin «{}» no puede correr aquí.", &[p]), Some((t("Ver plugins"), Go::Plugins))));
         }
 
@@ -189,7 +189,15 @@ impl Home {
                 let detail = if s.effects > 0 { format!("{} · {}", t(s.mic_mode), tf("{} efectos", &[&s.effects.to_string()])) } else { t(s.mic_mode).to_string() };
                 let plug = tf("{} instalados", &[&s.plugins.to_string()]);
                 let off = if s.plugins_off > 0 { tf("{} desactivados", &[&s.plugins_off.to_string()]) } else { String::new() };
-                let cards = [("\u{f0570}", t("Deck"), deck_text.0.clone(), deck_text.1.clone(), Go::Deck), ("\u{f036c}", t("Micrófono"), mic, detail, Go::Audio), ("\u{f0431}", t("Plugins"), plug, off, Go::Plugins)];
+                let cards: Vec<_> = [
+                    ("deck", ("\u{f0570}", t("Deck"), deck_text.0.clone(), deck_text.1.clone(), Go::Deck)),
+                    ("mic", ("\u{f036c}", t("Micrófono"), mic, detail, Go::Audio)),
+                    ("plugins", ("\u{f0431}", t("Plugins"), plug, off, Go::Plugins)),
+                ]
+                .into_iter()
+                .filter(|(part, _)| uses(part))
+                .map(|(_, c)| c)
+                .collect();
                 for row in cards.chunks(cols) {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 14.0;
@@ -204,6 +212,7 @@ impl Home {
             });
 
             // The microphone and every group, at hand.
+            if uses("mixer") {
             pad(ui, |ui| {
                 card_frame(card).show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -220,6 +229,7 @@ impl Home {
                 });
             });
             ui.add_space(14.0);
+            }
 
             // Connected devices.
             pad(ui, |ui| {
@@ -235,7 +245,7 @@ impl Home {
                         if s.dock {
                             device(ui, "\u{f036c}", "Elgato XLR Dock", None, accent);
                         }
-                        for (name, kind, level) in &s.batteries {
+                        for (name, kind, level) in s.batteries.iter().filter(|_| uses("devices")) {
                             device(ui, &corsair::icon(*kind).to_string(), &fluxdeck_core::presets::title(name), Some(*level), battery_color(*level, accent));
                         }
                         if deck.is_none() && !s.dock && s.batteries.is_empty() {

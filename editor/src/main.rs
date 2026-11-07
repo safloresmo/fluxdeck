@@ -72,6 +72,8 @@ struct App {
     saved: Config,
     /// Set when config.toml could not be parsed: saving would destroy it.
     blocked: Option<String>,
+    /// First run (no config yet): Inicio asks what to use before anything else.
+    welcome: bool,
     /// When the last automatic save failed; it is tried again a little later, not every frame.
     save_failed: Option<Instant>,
     theme: Theme,
@@ -187,6 +189,7 @@ impl App {
             theme: cfg.effective_theme(),
             cfg,
             blocked,
+            welcome: !config::path().exists(),
             styled: None,
             theme_checked: Instant::now(),
             page: 0,
@@ -501,11 +504,21 @@ impl App {
     }
 
     fn view_available(&self, v: View) -> bool {
+        let uses = |p| self.cfg.uses(p);
         match v {
-            View::Home | View::Deck | View::Plugins | View::Profiles | View::Settings => true,
-            View::Mic => true,
-            View::Devices => true,
+            View::Home | View::Settings => true,
+            // The phone shows the same pages as the deck.
+            View::Deck => uses("deck") || uses("phone"),
+            View::Mic => uses("mic") || uses("mixer"),
+            View::Devices => uses("devices"),
+            View::Profiles => uses("profiles"),
+            View::Plugins => uses("plugins"),
         }
+    }
+
+    /// Audio tabs in use: (index, name).
+    fn audio_tabs(&self) -> Vec<(usize, &'static str)> {
+        [(0, t("Mezclador"), "mixer"), (1, t("Micrófono"), "mic"), (2, t("Grupos"), "mixer")].into_iter().filter(|(_, _, p)| self.cfg.uses(p)).map(|(i, n, _)| (i, n)).collect()
     }
 
     fn dirty(&self) -> bool {
@@ -532,9 +545,14 @@ impl App {
         match self.cfg.save() {
             Ok(()) => {
                 let plugins_changed = self.saved.disabled_plugins != self.cfg.disabled_plugins;
+                let parts_changed = self.saved.off != self.cfg.off;
                 self.saved = self.cfg.clone();
                 if plugins_changed {
                     self.redetect();
+                }
+                // The service starts only the parts in use, so a change needs a fresh start.
+                if parts_changed && fluxdeck_core::paths::service_running() {
+                    std::thread::spawn(fluxdeck_core::paths::restart_service);
                 }
                 self.save_failed = None;
                 true
@@ -2197,7 +2215,31 @@ impl App {
         let _ = accent;
     }
 
+    /// One switch per part of FluxDeck; what is off leaves the editor and the service.
+    fn parts_ui(&mut self, ui: &mut egui::Ui, card: Color32) {
+        for (id, name, about) in fluxdeck_core::config::PARTS {
+            let mut on = self.cfg.uses(id);
+            setting(ui, card, t(name), t(about), |ui| {
+                if toggle_switch(ui, &mut on) {
+                    self.cfg.set_uses(id, on);
+                }
+            });
+        }
+    }
+
     fn settings_extensions(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
+        ui.label(RichText::new(t("Qué usas")).size(16.0).strong());
+        ui.label(RichText::new(t("Lo que apagues desaparece del editor y deja de correr en el servicio.")).weak().size(12.5));
+        ui.add_space(6.0);
+        self.parts_ui(ui, card);
+        ui.add_space(14.0);
+        if self.cfg.uses("devices") {
+            self.settings_modules(ui, card);
+        }
+        self.settings_integrations(ui, card, accent);
+    }
+
+    fn settings_modules(&mut self, ui: &mut egui::Ui, card: Color32) {
         ui.label(RichText::new(t("Módulos")).size(16.0).strong());
         ui.add_space(6.0);
         let mut corsair = self.cfg.module("corsair");
@@ -2230,6 +2272,9 @@ impl App {
         if headsets && !fluxdeck_core::headset::installed() {
             ui.label(RichText::new(t("HeadsetControl no está instalado: github.com/Sapd/HeadsetControl")).weak().size(12.5));
         }
+    }
+
+    fn settings_integrations(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
         // Only on a Ryoku desktop; elsewhere there is nothing to integrate with.
         if fluxdeck_core::paths::ryoku_desktop() {
             ui.add_space(14.0);
@@ -2351,7 +2396,8 @@ impl App {
         });
 
         section(ui, t("Al presionar"));
-        code(ui, t("Comando"), &mut key.command, "kitty, hyprctl dispatch …, wtype -M ctrl c …");
+        code(ui, t("Comando"), &mut key.command, "kitty, playerctl play-pause, notify-send …");
+        code(ui, t("Al mantener pulsada"), &mut key.hold, t("Otro comando; la pulsación corta hace lo de arriba al soltar"));
         ui.horizontal(|ui| {
             ui.label(t("Abrir página"));
             egui::ComboBox::from_id_salt("goto").selected_text(if key.page.is_empty() { "—" } else { &key.page }).show_ui(ui, |ui| {
@@ -2534,13 +2580,42 @@ impl eframe::App for App {
         self.sidebar(ui);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         self.home.set_active(self.view == View::Home, self.cfg.module("corsair"));
+        if self.view == View::Home && self.welcome {
+            let card = ui.visuals().faint_bg_color;
+            let accent = self.accent();
+            egui::CentralPanel::default().show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add_space(28.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(28.0);
+                        ui.vertical(|ui| {
+                            ui.set_max_width(640.0);
+                            ui.label(RichText::new(t("Te damos la bienvenida a FluxDeck")).size(24.0).strong());
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(t("¿Qué quieres usar? Enciende solo lo que te sirva; lo demás no aparece ni corre. Lo puedes cambiar cuando quieras en Ajustes → Extensiones.")).size(14.0));
+                            ui.add_space(16.0);
+                            self.parts_ui(ui, card);
+                            ui.add_space(16.0);
+                            let go = egui::Button::new(RichText::new(t("Empezar")).size(15.0).color(Color32::WHITE)).fill(accent).min_size(vec2(140.0, 36.0));
+                            if ui.add(go).clicked() && self.save() {
+                                self.welcome = false;
+                                self.redetect();
+                            }
+                        });
+                    });
+                });
+            });
+            self.close_guard(&ctx);
+            return;
+        }
         if self.view == View::Home {
             let card = ui.visuals().faint_bg_color;
             let accent = self.accent();
             let live = self.live.clone();
             let groups = self.cfg.groups.clone();
+            let off = self.cfg.off.clone();
             let mixer = &mut self.mixer;
-            let go = egui::CentralPanel::default().show(ui, |ui| self.home.ui(ui, card, accent, self.service_up, live.as_ref(), self.cfg.module("corsair"), |ui| mixer.mini(ui, accent, &groups))).inner;
+            let go = egui::CentralPanel::default().show(ui, |ui| self.home.ui(ui, card, accent, self.service_up, live.as_ref(), self.cfg.module("corsair"), &|p| !off.iter().any(|o| o == p), |ui| mixer.mini(ui, accent, &groups))).inner;
             match go {
                 Some(home::Go::Deck) => self.view = View::Deck,
                 Some(home::Go::Audio) => self.view = View::Mic,
@@ -2596,7 +2671,13 @@ impl eframe::App for App {
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    for (i, name) in [t("Mezclador"), t("Micrófono"), t("Grupos")].into_iter().enumerate() {
+                    let tabs = self.audio_tabs();
+                    if !tabs.iter().any(|(i, _)| *i == self.audio_tab)
+                        && let Some((first, _)) = tabs.first()
+                    {
+                        self.audio_tab = *first;
+                    }
+                    for (i, name) in tabs {
                         if ui.selectable_label(self.audio_tab == i, RichText::new(name).size(15.0)).clicked() {
                             self.audio_tab = i;
                         }

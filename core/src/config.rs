@@ -43,8 +43,22 @@ pub struct Config {
     /// Optional device modules that are switched on, such as "corsair".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<String>,
+    /// Parts of FluxDeck the user switched off (see PARTS); everything else is on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub off: Vec<String>,
     pub pages: Vec<Page>,
 }
+
+/// The parts of FluxDeck someone can do without: (id, name, what it is).
+pub const PARTS: [(&str, &str, &str); 7] = [
+    ("deck", "Stream Deck", "Las teclas, perillas y la pantalla del deck"),
+    ("phone", "Deck en el celular", "El deck en la pantalla de tu teléfono, por la red de tu casa"),
+    ("mic", "Micrófono", "Efectos y filtros para tu micrófono"),
+    ("mixer", "Mezclador y grupos", "Volumen por app, grupos de apps y la mezcla para stream"),
+    ("devices", "Periféricos", "Corsair, luces y auriculares de otras marcas, baterías y teclas extra"),
+    ("profiles", "Perfiles", "Cambios según la app que estás usando"),
+    ("plugins", "Plugins", "Acciones de la tienda de plugins de Stream Deck"),
+];
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -82,6 +96,9 @@ pub struct Key {
     pub color: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub command: String,
+    /// Command for holding the key half a second; with one set, the press acts on release.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hold: String,
     /// Page to open when pressed.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub page: String,
@@ -173,6 +190,7 @@ impl Default for Config {
             profiles: Vec::new(),
             extra_keys: Default::default(),
             modules: Vec::new(),
+            off: Vec::new(),
             pages: vec![Page { name: "inicio".into(), ..Default::default() }],
         }
     }
@@ -214,6 +232,18 @@ impl Dial {
 impl Config {
     pub fn module(&self, name: &str) -> bool {
         self.modules.iter().any(|m| m == name)
+    }
+
+    /// Whether a part of FluxDeck (an id from PARTS) is in use.
+    pub fn uses(&self, part: &str) -> bool {
+        !self.off.iter().any(|p| p == part)
+    }
+
+    pub fn set_uses(&mut self, part: &str, on: bool) {
+        self.off.retain(|p| p != part);
+        if !on {
+            self.off.push(part.to_string());
+        }
     }
 
     pub fn set_module(&mut self, name: &str, on: bool) {

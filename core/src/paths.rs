@@ -149,6 +149,25 @@ pub fn start_service() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Stops the running service and starts it again, however it was started.
+pub fn restart_service() -> Result<(), String> {
+    let unit = format!("{NAME}.service");
+    let active = std::process::Command::new("systemctl").args(["--user", "is-active", "--quiet", &unit]).status().is_ok_and(|s| s.success());
+    if active {
+        let ok = std::process::Command::new("systemctl").args(["--user", "restart", &unit]).status().is_ok_and(|s| s.success());
+        return if ok { Ok(()) } else { Err(format!("systemctl --user restart {unit}")) };
+    }
+    let _ = std::process::Command::new("pkill").args(["-x", NAME]).status();
+    // The old copy frees its port before the new one checks it.
+    for _ in 0..20 {
+        if !service_running() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    start_service()
+}
+
 /// The service binary next to the running one, or on PATH.
 pub fn service_bin() -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(NAME))).filter(|p| p.is_file()).unwrap_or_else(|| NAME.into())

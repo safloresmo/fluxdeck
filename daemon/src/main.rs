@@ -118,18 +118,36 @@ fn daemon() {
     }
     let (tx, rx) = channel();
     let _watcher = watch(tx.clone());
-    effectsrun::start();
-    remote::start();
-    phone_decks();
-    groupsrun::start();
-    streamrun::start();
-    profilesrun::start(tx.clone());
+    // Parts switched off do not run at all; the editor restarts the service when they change.
+    let parts = Config::load().unwrap_or_default();
+    if parts.uses("mic") {
+        effectsrun::start();
+    }
+    if parts.uses("phone") {
+        remote::start();
+        phone_decks();
+    }
+    if parts.uses("mixer") {
+        groupsrun::start();
+        streamrun::start();
+    }
+    if parts.uses("profiles") {
+        profilesrun::start(tx.clone());
+    }
     lock::start();
-    extrakeys::start(tx.clone());
+    if parts.uses("devices") {
+        extrakeys::start(tx.clone());
+    }
     tray::start(tx.clone());
-    let host = Host::start(tx.clone());
-    if host.is_none() {
+    let host = if parts.uses("plugins") { Host::start(tx.clone()) } else { None };
+    if host.is_none() && parts.uses("plugins") {
         eprintln!("fluxdeck: no free port for plugins; they are off");
+    }
+    if !parts.uses("deck") {
+        // Nothing to drive here; the other parts run on their own threads.
+        loop {
+            thread::sleep(Duration::from_secs(3600));
+        }
     }
     if let (Some(h), Ok(cfg)) = (&host, Config::load()) {
         h.set_layout(&cfg);
@@ -277,6 +295,8 @@ struct Session {
     asleep: bool,
     /// Keys and dials whose press woke the deck: their release is dropped too.
     swallowed: HashSet<Slot>,
+    /// Keys with a hold action that are down: when, and whether the hold already ran.
+    held: HashMap<u8, (Instant, bool)>,
     host: Option<Host>,
     /// What plugins asked to show, by instance.
     looks: HashMap<String, Look>,
@@ -365,6 +385,7 @@ impl Session {
             last_input: Instant::now(),
             asleep: false,
             swallowed: HashSet::new(),
+            held: HashMap::new(),
         }
     }
 
@@ -395,6 +416,7 @@ impl Session {
                 }
             }
             self.sleep_check()?;
+            self.hold_check();
             // A phone started watching: send it every image once.
             if remote::take_refresh(&self.view) {
                 self.sent.clear();
@@ -518,6 +540,8 @@ impl Session {
     fn reset_page(&mut self) {
         self.generation += 1;
         self.status.clear();
+        // A key held across a page change belongs to the old page.
+        self.held.clear();
         self.due.clear();
         self.busy.clear();
         self.stop_meters();
@@ -751,21 +775,47 @@ impl Session {
         }
     }
 
+    /// What a key does when pressed: open its page, run its command and its steps.
+    fn press(&mut self, i: u8, key: &fluxdeck_core::Key) {
+        if let Some(target) = self.cfg.page_index(&key.page) {
+            self.open_page(target);
+        }
+        self.act(Slot::Key(i), &key.command, 1);
+        if !key.steps.is_empty() {
+            run_steps(key.steps.clone(), self.tx.clone());
+        }
+    }
+
+    /// Runs the hold action of keys held for half a second, once per press.
+    fn hold_check(&mut self) {
+        let due: Vec<u8> = self.held.iter().filter(|(_, (at, ran))| !ran && at.elapsed() >= Duration::from_millis(500)).map(|(i, _)| *i).collect();
+        for i in due {
+            self.held.insert(i, (Instant::now(), true));
+            if let Some(cmd) = self.cfg.pages[self.page].key(i).map(|k| k.hold.clone()) {
+                self.act(Slot::Key(i), &cmd, 1);
+            }
+        }
+    }
+
     fn act_on(&mut self, ev: DeviceStateUpdate) {
         let page = &self.cfg.pages[self.page];
         match ev {
             DeviceStateUpdate::ButtonDown(i) => {
                 let Some(key) = page.key(i).cloned() else { return };
                 self.plugin_event(Slot::Key(i), "keyDown", json!({}));
-                if let Some(target) = self.cfg.page_index(&key.page) {
-                    self.open_page(target);
-                }
-                self.act(Slot::Key(i), &key.command, 1);
-                if !key.steps.is_empty() {
-                    run_steps(key.steps.clone(), self.tx.clone());
+                // A key that also has a hold action waits to see which one it is.
+                if key.hold.is_empty() {
+                    self.press(i, &key);
+                } else {
+                    self.held.insert(i, (Instant::now(), false));
                 }
             }
             DeviceStateUpdate::ButtonUp(i) => {
+                if let Some((_, false)) = self.held.remove(&i)
+                    && let Some(key) = page.key(i).cloned()
+                {
+                    self.press(i, &key);
+                }
                 if self.plugin_event(Slot::Key(i), "keyUp", json!({})) {
                     self.auto_state(i);
                 }
