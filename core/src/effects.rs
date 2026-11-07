@@ -344,6 +344,7 @@ pub struct Pack {
     /// Spanish source text; shown through i18n::t.
     pub about: &'static str,
     /// Package name for each package manager; a missing one means that distro has no package.
+    /// Checked by the release workflow on Ubuntu, Debian, Fedora and openSUSE.
     pub packages: &'static [(&'static str, &'static str)],
 }
 
@@ -351,17 +352,17 @@ pub const PACKS: &[Pack] = &[
     Pack {
         name: "LSP Plugins",
         about: "Calidad de estudio: ecualizador paramétrico, compuerta, de-esser, compresores y limitadores.",
-        packages: &[("pacman", "lsp-plugins-lv2"), ("apt", "lsp-plugins-lv2"), ("dnf", "lsp-plugins-lv2"), ("zypper", "lsp-plugins-lv2")],
+        packages: &[("pacman", "lsp-plugins-lv2"), ("apt", "lsp-plugins-lv2"), ("dnf", "lsp-plugins-lv2")],
     },
     Pack {
         name: "x42",
         about: "Ecualizador, compresor y medidores precisos, muy ligeros.",
-        packages: &[("pacman", "x42-plugins-lv2"), ("apt", "x42-plugins"), ("dnf", "x42-plugins"), ("zypper", "x42-plugins")],
+        packages: &[("pacman", "x42-plugins-lv2"), ("apt", "x42-plugins")],
     },
     Pack {
         name: "Calf",
         about: "Compresores, de-esser, compuerta y ecualizadores clásicos.",
-        packages: &[("pacman", "calf"), ("apt", "calf-plugins"), ("dnf", "lv2-calf-plugins"), ("zypper", "calf")],
+        packages: &[("pacman", "calf"), ("apt", "calf-plugins"), ("dnf", "lv2-calf-plugins")],
     },
     Pack {
         name: "SWH",

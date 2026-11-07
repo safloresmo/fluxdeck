@@ -303,7 +303,8 @@ como un micrófono más, «Micrófono con efectos», sin tocar la config de Pipe
   y esta cadena.
 - «Paquetes de efectos», al final de la lista de agregar, instala LSP, x42, Calf, SWH o RNNoise con
   el gestor de paquetes del sistema (pacman, apt, dnf o zypper) en una terminal, donde escribes tu
-  contraseña. Los nombres de paquete de pacman están comprobados; los de las demás distros, no.
+  contraseña. Los nombres de paquete están comprobados en Arch, Ubuntu, Debian, Fedora y openSUSE;
+  donde una distro no tiene el paquete, no se ofrece.
 - `fluxdeck effects import` crea la cadena desde la terminal.
 
 Los plugins VST no se cargan: en Linux, LV2 y LADSPA cumplen ese papel y PipeWire los corre sin

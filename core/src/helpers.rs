@@ -114,8 +114,8 @@ fn state(h: Helper) -> State {
 }
 
 fn fix(h: Helper, state: &State) -> Option<Fix> {
-    let pm = package_manager();
-    let install = |pkg: &str| match pm {
+    // Only where the distro has the package (checked by the release workflow); elsewhere, the page.
+    let install = |pkg: &str, managers: &[&str]| match package_manager().filter(|pm| managers.contains(pm)) {
         Some("pacman") => Some(format!("sudo pacman -S --needed {pkg}")),
         Some("apt") => Some(format!("sudo apt install {pkg}")),
         Some("dnf") => Some(format!("sudo dnf install {pkg}")),
@@ -132,8 +132,8 @@ fn fix(h: Helper, state: &State) -> Option<Fix> {
             None => page(),
         },
         (Helper::OpenRgb, State::Stopped) => Fix::Launch(vec!["openrgb".into(), "--server".into(), "--startminimized".into()]),
-        (Helper::OpenRgb, State::Missing) => install("openrgb").map(Fix::Terminal).unwrap_or_else(page),
-        (Helper::HeadsetControl, _) => install("headsetcontrol").map(Fix::Terminal).unwrap_or_else(page),
+        (Helper::OpenRgb, State::Missing) => install("openrgb", &["pacman", "dnf", "zypper"]).map(Fix::Terminal).unwrap_or_else(page),
+        (Helper::HeadsetControl, _) => install("headsetcontrol", &["pacman", "dnf"]).map(Fix::Terminal).unwrap_or_else(page),
     })
 }
 
