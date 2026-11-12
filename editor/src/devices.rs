@@ -1,9 +1,10 @@
-//! Peripherals view: one card per Corsair device seen by OpenLinkHub, per light OpenRGB controls and
-//! per wireless peripheral UPower sees.
+//! Peripherals view: one card per device, with the sections that OpenLinkHub, OpenRGB, HeadsetControl
+//! and UPower know about it.
 use crate::mic::{card_frame, toggle};
 use fluxdeck_core::corsair::{self, LEVELS, Live};
 use fluxdeck_core::presets::{Env, title};
 use fluxdeck_core::helpers::{self, Fix, Need, State};
+use fluxdeck_core::peripherals::{self, Peripheral};
 use fluxdeck_core::{headset, openrgb, upower};
 use fluxdeck_core::i18n::{t, tf};
 use eframe::egui::{self, Color32, RichText, Sense, vec2};
@@ -43,8 +44,20 @@ struct Others {
     rgb: Vec<openrgb::Device>,
     batteries: Vec<upower::Battery>,
     headsets: Vec<headset::Headset>,
-    /// Programs the connected peripherals need.
-    needs: Vec<Need>,
+}
+
+impl Others {
+    fn peripherals(&self, corsair: &[corsair::Device]) -> Vec<Peripheral> {
+        peripherals::merge(corsair, &self.rgb, &self.headsets, &self.batteries)
+    }
+}
+
+/// Every helper program and its state; None until the first check ends. Shared so that a new `Devices`
+/// starts from the last known result instead of an empty list.
+static HELPERS: Mutex<Option<Vec<Need>>> = Mutex::new(None);
+
+fn known_helpers() -> Option<Vec<Need>> {
+    HELPERS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 pub struct Devices {
@@ -63,6 +76,7 @@ pub struct Devices {
     modules: Vec<String>,
     /// A module the user asked to switch on from a suggestion, for the app to apply.
     pub enable: Option<&'static str>,
+    watching: Arc<AtomicBool>,
 }
 
 impl Devices {
@@ -75,6 +89,21 @@ impl Devices {
         let latest_others = Arc::new(Mutex::new(None));
         let active = Arc::new(AtomicBool::new(false));
         let errors = Arc::new(Mutex::new(Vec::new()));
+        let watching = Arc::new(AtomicBool::new(false));
+        {
+            let watching = watching.clone();
+            std::thread::spawn(move || {
+                let mut last = Instant::now() - Duration::from_secs(60);
+                while Arc::strong_count(&watching) > 1 {
+                    if watching.load(Ordering::Relaxed) && last.elapsed() > Duration::from_secs(3) {
+                        // A thread, because HeadsetControl can take seconds.
+                        *HELPERS.lock().unwrap_or_else(|e| e.into_inner()) = Some(helpers::all(headset_on));
+                        last = Instant::now();
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            });
+        }
         {
             let (latest, latest_others, active, serials) = (latest.clone(), latest_others.clone(), active.clone(), list.iter().map(|d| d.serial.clone()).collect::<Vec<_>>());
             std::thread::spawn(move || {
@@ -85,7 +114,7 @@ impl Devices {
                         *latest.lock().unwrap() = Some(all);
                         let rgb = if rgb_on { openrgb::devices() } else { Vec::new() };
                         let headsets = if headset_on { headset::headsets() } else { Vec::new() };
-                        *latest_others.lock().unwrap() = Some(Others { rgb, batteries: upower::batteries(), headsets, needs: helpers::needs() });
+                        *latest_others.lock().unwrap() = Some(Others { rgb, batteries: upower::batteries(), headsets });
                     }
                     std::thread::sleep(Duration::from_millis(1500));
                 }
@@ -129,9 +158,10 @@ impl Devices {
             list: list.to_vec(),
             shown: HashMap::new(),
             latest,
-            others: Others { rgb: env.rgb.clone(), batteries: env.batteries.clone(), headsets: env.headsets.clone(), needs: helpers::needs() },
+            others: Others { rgb: env.rgb.clone(), batteries: env.batteries.clone(), headsets: env.headsets.clone() },
             modules: modules.to_vec(),
             enable: None,
+            watching,
             latest_others,
             corsair_on: modules.iter().any(|m| m == "corsair"),
             active,
@@ -143,8 +173,10 @@ impl Devices {
         }
     }
 
-    pub fn set_active(&mut self, on: bool) {
+    /// `helpers` is on while a screen shows the helper programs' state.
+    pub fn set_active(&mut self, on: bool, helpers: bool) {
         self.active.store(on, Ordering::Relaxed);
+        self.watching.store(helpers, Ordering::Relaxed);
     }
 
     fn send(&mut self, w: Write) {
@@ -169,7 +201,8 @@ impl Devices {
         }
         ui.ctx().request_repaint_after(Duration::from_millis(500));
         ui.add_space(20.0);
-        let needs: Vec<Need> = self.others.needs.iter().filter(|n| n.state != State::Ready || !self.modules.iter().any(|m| m == n.helper.module())).cloned().collect();
+        let checked = known_helpers();
+        let needs: Vec<Need> = checked.iter().flatten().filter(|n| !n.devices.is_empty() && (n.state != State::Ready || !self.modules.iter().any(|m| m == n.helper.module()))).cloned().collect();
         for n in &needs {
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
@@ -181,59 +214,81 @@ impl Devices {
             ui.add_space(12.0);
         }
         let olh_suggested = needs.iter().any(|n| n.helper == helpers::Helper::OpenLinkHub);
-        if self.corsair_on && self.list.is_empty() && !olh_suggested {
+        let mut told = olh_suggested;
+        // Nothing about Corsair unless a Corsair device is plugged in.
+        if self.corsair_on && self.corsair_connected() && self.list.is_empty() && !olh_suggested {
             let msg = if self.running { t("OpenLinkHub no ve ningún aparato Corsair.") } else { t("OpenLinkHub no está corriendo. Instálalo y arráncalo: github.com/jurkovic-nikola/OpenLinkHub") };
             ui.vertical_centered(|ui| ui.label(RichText::new(msg).weak()));
             ui.add_space(12.0);
+            told = true;
         }
-        if self.list.is_empty() && self.others.rgb.is_empty() && self.others.batteries.is_empty() && self.others.headsets.is_empty() {
-            if !self.corsair_on {
+        let all = self.others.peripherals(&self.list);
+        if all.is_empty() {
+            if checked.is_none() {
+                ui.vertical_centered(|ui| ui.label(RichText::new(t("Comprobando…")).weak()));
+            } else if !told {
                 ui.vertical_centered(|ui| ui.label(RichText::new(t("No hay periféricos que mostrar. Los módulos de cada marca se activan en Ajustes → Extensiones.")).weak()));
             }
             return;
         }
-        let list = self.list.clone();
-        let (rgb, batteries, headsets) = (self.others.rgb.clone(), self.others.batteries.clone(), self.others.headsets.clone());
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(20.0);
-            for d in &list {
-                card_frame(card).show(ui, |ui| {
-                    ui.set_width(300.0);
-                    ui.vertical(|ui| self.card(ui, d, accent));
-                });
-                ui.add_space(12.0);
-            }
-            for d in &rgb {
-                card_frame(card).show(ui, |ui| {
-                    ui.set_width(300.0);
-                    ui.vertical(|ui| self.rgb_card(ui, d));
-                });
-                ui.add_space(12.0);
-            }
-            for h in &headsets {
-                card_frame(card).show(ui, |ui| {
-                    ui.set_width(300.0);
-                    ui.vertical(|ui| self.headset_card(ui, h, accent));
-                });
-                ui.add_space(12.0);
-            }
-            for b in &batteries {
-                card_frame(card).show(ui, |ui| {
-                    ui.set_width(300.0);
-                    ui.vertical(|ui| {
-                        header(ui, corsair::icon(b.kind_code()), &title(&b.model));
-                        battery(ui, b.level, accent);
+        // Rows of as many cards as fit, all the same width: wrapping a row of frames lets the last ones run off screen.
+        // A card is 40 wider than its content (margins) and 20 apart from the next; the spare width is shared out like the plugin grid does.
+        let room = ui.available_width() - 48.0;
+        let per_row = (((room + 20.0) / 360.0) as usize).max(1);
+        let width = ((room - 20.0 * (per_row as f32 - 1.0)) / per_row as f32).floor() - 40.0;
+        for row in all.chunks(per_row) {
+            ui.horizontal_top(|ui| {
+                ui.add_space(20.0);
+                for p in row {
+                    card_frame(card).show(ui, |ui| {
+                        ui.set_width(width);
+                        // The slider and its percentage must fit inside the card.
+                        ui.spacing_mut().slider_width = width - 70.0;
+                        ui.vertical(|ui| self.peripheral_card(ui, p, accent));
                     });
-                });
-                ui.add_space(12.0);
-            }
-        });
+                    ui.add_space(12.0);
+                }
+            });
+            ui.add_space(12.0);
+        }
+    }
+
+    /// Whether a Corsair device is plugged in, which is what OpenLinkHub is needed for.
+    pub fn corsair_connected(&self) -> bool {
+        known_helpers().is_some_and(|h| h.iter().any(|n| n.helper == helpers::Helper::OpenLinkHub && !n.devices.is_empty()))
+    }
+
+    fn peripheral_card(&mut self, ui: &mut egui::Ui, p: &Peripheral, accent: Color32) {
+        let name = if p.corsair.is_some() { p.name.clone() } else { title(&p.name) };
+        header(ui, p.icon(), &name);
+        let live = p.corsair.as_ref().and_then(|d| self.shown.get(&d.serial)).cloned().unwrap_or_default();
+        let level = live.battery.or(p.headset.as_ref().and_then(|h| h.battery)).or(p.battery.as_ref().map(|b| b.level));
+        let corsair_lights = live.effect.is_some() || live.brightness.is_some();
+        // OpenLinkHub gives no color: with its lights, OpenRGB only adds the color.
+        let rgb = p.rgb.as_ref().filter(|d| d.takes_color() || !corsair_lights && (d.brightness().is_some() || d.effect().is_some()));
+        let headset = p.headset.as_ref().filter(|h| h.has_sidetone || h.has_lights);
+        if level.is_none() && live.anc.is_none() && !corsair_lights && live.lcd.is_none() && rgb.is_none() && headset.is_none() {
+            ui.label(RichText::new(t("Sin ajustes que controlar desde aquí.")).weak().size(12.5));
+        }
+        if let Some(b) = level {
+            battery(ui, b, accent);
+        }
+        if let Some(d) = &p.corsair {
+            self.corsair_sections(ui, d, accent);
+        }
+        if let Some(d) = rgb {
+            self.rgb_sections(ui, d, corsair_lights);
+        }
+        if let Some(h) = headset {
+            self.headset_sections(ui, h, accent);
+        }
     }
 
     fn need_card(&mut self, ui: &mut egui::Ui, n: &Need, accent: Color32) {
         let name = n.helper.name();
         let devices = n.devices.iter().map(|d| title(d)).collect::<Vec<_>>().join(", ");
-        ui.label(RichText::new(tf("Conectado: {}", &[&devices])).size(15.0).strong());
+        ui.label(RichText::new(t("Conectado")).size(15.0).strong());
+        ui.label(RichText::new(devices).weak());
         let what = match n.state {
             State::Missing => tf("Para controlarlo hace falta {}, que no está instalado.", &[name]),
             State::Stopped => tf("Para controlarlo hace falta {}, que está instalado pero no está corriendo.", &[name]),
@@ -245,6 +300,12 @@ impl Devices {
             ui.label(RichText::new(cmd).monospace().color(accent));
             ui.add_space(4.0);
         }
+        self.fix_buttons(ui, n, true);
+    }
+
+    /// The button that fixes a program: a command for a terminal, the program, or its page.
+    fn fix_buttons(&mut self, ui: &mut egui::Ui, n: &Need, module_button: bool) {
+        let name = n.helper.name();
         ui.horizontal(|ui| {
             match &n.fix {
                 Some(Fix::Terminal(cmd)) => {
@@ -273,18 +334,53 @@ impl Devices {
                 None => {}
             }
             let module = n.helper.module();
-            if !self.modules.iter().any(|m| m == module) && ui.button(t("Activar módulo")).clicked() {
+            if module_button && !self.modules.iter().any(|m| m == module) && ui.button(t("Activar módulo")).clicked() {
                 self.enable = Some(module);
             }
         });
     }
 
-    fn headset_card(&mut self, ui: &mut egui::Ui, h: &headset::Headset, accent: Color32) {
-        let mut live = h.clone();
-        header(ui, corsair::icon(Some(2)), &title(&h.product));
-        if let Some(b) = h.battery {
-            battery(ui, b, accent);
+    /// One card per helper program with its state and the way to fix it, for Settings.
+    pub fn helpers_ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
+        ui.ctx().request_repaint_after(Duration::from_secs(1));
+        let Some(all) = known_helpers() else {
+            ui.label(RichText::new(t("Comprobando…")).weak());
+            return;
+        };
+        for n in all {
+            // Not installed and no connected device needs it: nothing is wrong.
+            let idle = n.devices.is_empty() && n.state == State::Missing;
+            card_frame(card).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(n.helper.name()).size(15.0).strong());
+                    let (text, color) = match n.state {
+                        State::Missing if idle => (t("No lo necesitas: no hay aparatos conectados que lo usen"), ui.visuals().weak_text_color()),
+                        State::Ready => (t("Instalado y listo"), accent),
+                        State::Stopped => (t("Instalado pero parado"), Color32::from_rgb(217, 164, 65)),
+                        State::Missing => (t("Falta"), Color32::from_rgb(229, 72, 77)),
+                    };
+                    ui.label(RichText::new(text).color(color));
+                });
+                if !idle {
+                    let used = if n.devices.is_empty() { t("Ninguno de tus aparatos lo necesita ahora.").to_string() } else { tf("Lo necesitan: {}", &[&n.devices.iter().map(|d| title(d)).collect::<Vec<_>>().join(", ")]) };
+                    ui.label(RichText::new(used).weak().size(12.5));
+                }
+                if let Some(Fix::Terminal(cmd)) = &n.fix {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(cmd).monospace().color(if idle { ui.visuals().weak_text_color() } else { accent }));
+                }
+                if n.fix.is_some() {
+                    ui.add_space(4.0);
+                    self.fix_buttons(ui, &n, false);
+                }
+            });
+            ui.add_space(8.0);
         }
+    }
+
+    fn headset_sections(&mut self, ui: &mut egui::Ui, h: &headset::Headset, accent: Color32) {
+        let mut live = h.clone();
         if h.has_sidetone {
             ui.label(t("Retorno de voz"));
             let mut level = h.sidetone.unwrap_or(0);
@@ -310,17 +406,16 @@ impl Devices {
         }
     }
 
-    fn rgb_card(&mut self, ui: &mut egui::Ui, d: &openrgb::Device) {
+    fn rgb_sections(&mut self, ui: &mut egui::Ui, d: &openrgb::Device, color_only: bool) {
         let mut live = d.clone();
-        header(ui, '\u{f0335}', &title(&d.name));
-        if let Some(mut b) = d.brightness() {
+        if let Some(mut b) = d.brightness().filter(|_| !color_only) {
             ui.label(t("Brillo"));
             if ui.add(egui::Slider::new(&mut b, 0..=100).suffix("%")).changed() {
                 self.send(Write::RgbBrightness(d.id.clone(), b));
             }
             ui.add_space(8.0);
         }
-        if let Some(cur) = d.effect().map(String::from) {
+        if let Some(cur) = d.effect().filter(|_| !color_only).map(String::from) {
             ui.label(t("Efecto de luz"));
             egui::ComboBox::from_id_salt(("rgb", &d.id)).selected_text(openrgb::effect_name(&cur)).width(220.0).show_ui(ui, |ui| {
                 for (i, e) in d.effects().iter().enumerate() {
@@ -345,9 +440,6 @@ impl Devices {
                 }
             });
         }
-        if d.modes.is_empty() {
-            ui.label(RichText::new(t("Sin ajustes que controlar desde aquí.")).weak().size(12.5));
-        }
         // The new effect shows until OpenRGB's next reading.
         if let Some(slot) = self.others.rgb.iter_mut().find(|r| r.id == d.id) {
             *slot = live;
@@ -359,12 +451,8 @@ impl Devices {
         self.list.iter().find(|d| d.kind == Some(0)).map(|d| d.serial.clone())
     }
 
-    fn card(&mut self, ui: &mut egui::Ui, d: &corsair::Device, accent: Color32) {
+    fn corsair_sections(&mut self, ui: &mut egui::Ui, d: &corsair::Device, accent: Color32) {
         let mut live = self.shown.get(&d.serial).cloned().unwrap_or_default();
-        header(ui, corsair::icon(d.kind), &d.product);
-        if let Some(b) = live.battery {
-            battery(ui, b, accent);
-        }
         if let Some(anc) = live.anc {
             ui.label(t("Cancelación de ruido"));
             ui.horizontal(|ui| {
@@ -417,16 +505,14 @@ impl Devices {
                 }
             });
         }
-        if live.battery.is_none() && live.anc.is_none() && live.brightness.is_none() && live.effect.is_none() && live.lcd.is_none() {
-            ui.label(RichText::new(t("Sin ajustes que controlar desde aquí.")).weak().size(12.5));
-        }
         self.shown.insert(d.serial.clone(), live);
     }
 }
 
 fn header(ui: &mut egui::Ui, icon: char, name: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(icon.to_string()).size(22.0));
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(RichText::new(format!("{icon} ")).size(22.0));
         ui.label(RichText::new(name).size(17.0).strong());
     });
     ui.add_space(8.0);

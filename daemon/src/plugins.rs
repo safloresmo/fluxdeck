@@ -288,7 +288,11 @@ impl Host {
             "getGlobalSettings" => self.send(from, &self.global(&plugin)),
             "openUrl" => {
                 if let Some(url) = payload["url"].as_str().filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
-                    let _ = Command::new("xdg-open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                    if let Ok(mut c) = Command::new("xdg-open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+                        std::thread::spawn(move || {
+                            let _ = c.wait();
+                        });
+                    }
                 }
             }
             "logMessage" => eprintln!("fluxdeck: [{plugin}] {}", payload["message"].as_str().unwrap_or_default()),

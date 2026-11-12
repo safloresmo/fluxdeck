@@ -254,7 +254,7 @@ impl Mic {
 
     fn listen_button(&mut self, ui: &mut egui::Ui) {
         let on = self.monitor.is_some();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if toggle(ui, on, &format!("\u{f02cb}  {}", t("Escucharme")), Color32::from_rgb(46, 125, 50)) {
                 self.listen(!on);
             }

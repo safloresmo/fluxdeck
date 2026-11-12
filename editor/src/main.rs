@@ -97,6 +97,10 @@ struct App {
     new_page: String,
     rename: String,
     notice: String,
+    /// An error or a path notice: it stays until clicked or replaced.
+    sticky: String,
+    /// Set while the service restarts after a parts change.
+    restarting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     confirm_close: bool,
     closing: bool,
     view: View,
@@ -133,6 +137,8 @@ struct App {
     /// Stream Deck's) with the phones that have decks of their own, read now and then.
     phone_qr: Option<String>,
     view_as: Option<String>,
+    /// The last deck the service saw, for drawing its shape when none is plugged in.
+    last_model: String,
     phone_shapes: (Vec<(String, String, (u8, u8, u8))>, Instant),
     /// The icon store window and the key or dial it picks an icon for.
     icon_store: icons::IconStore,
@@ -178,6 +184,7 @@ impl App {
             Ok(c) => (c, None),
             Err(e) => (Config::default(), Some(e)),
         };
+        let warn = blocked.as_ref().map(|e| tf("No guardo: el archivo tiene un error ({}). Corrígelo y pulsa Recargar.", &[e])).unwrap_or_default();
         let nodes = pw::nodes();
         let env = presets::Env::detect(&cfg.modules);
         let devices = devices::Devices::new(&env, &cfg.modules);
@@ -218,7 +225,9 @@ impl App {
             glyphs: glyph_names(),
             icon_query: String::new(),
             new_page: String::new(),
-            notice: String::new(),
+            notice: warn.clone(),
+            sticky: warn,
+            restarting: Default::default(),
             confirm_close: false,
             closing: false,
             service_up: fluxdeck_core::paths::service_running(),
@@ -247,6 +256,7 @@ impl App {
             backup_pick: None,
             phone_qr: None,
             view_as: None,
+            last_model: config::saved_model(),
             phone_shapes: (Vec::new(), Instant::now() - Duration::from_secs(60)),
             icon_store: icons::IconStore::new(),
             icon_target: None,
@@ -324,6 +334,11 @@ impl App {
         self.rename = self.cfg.pages[self.page].name.clone();
         self.theme = self.cfg.effective_theme();
         self.notice = msg.into();
+    }
+
+    fn keep(&mut self, msg: String) {
+        self.sticky = msg.clone();
+        self.notice = msg;
     }
 
     fn slot_act(&mut self, sel: Sel, act: SlotAct) {
@@ -428,7 +443,7 @@ impl App {
     fn start_service(&mut self) {
         match fluxdeck_core::paths::start_service() {
             Ok(()) => self.notice = t("Servicio iniciado").into(),
-            Err(e) => self.notice = tf("No se pudo iniciar el servicio: {}", &[&e]),
+            Err(e) => self.keep(tf("No se pudo iniciar el servicio: {}", &[&e])),
         }
         self.service_checked = Instant::now() - Duration::from_secs(5);
     }
@@ -451,7 +466,7 @@ impl App {
 
     /// Left navigation; only icons when the window is narrow.
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        let narrow = ui.ctx().content_rect().width() < 1360.0;
+        let narrow = ui.ctx().content_rect().width() < 1180.0;
         let width = if narrow { 64.0 } else { 190.0 };
         let accent = self.accent();
         egui::Panel::left("nav").resizable(false).exact_size(width).show(ui, |ui| {
@@ -533,13 +548,14 @@ impl App {
         }
         match &self.live {
             Some(s) if s.cols > 0 => (s.cols, s.rows, s.dials),
-            _ => DEFAULT_LAYOUT,
+            _ => config::model_shape(&self.last_model).unwrap_or(DEFAULT_LAYOUT),
         }
     }
 
     fn save(&mut self) -> bool {
         if let Some(e) = &self.blocked {
-            self.notice = tf("No guardo: el archivo tiene un error ({}). Corrígelo y pulsa Recargar.", &[e]);
+            let msg = tf("No guardo: el archivo tiene un error ({}). Corrígelo y pulsa Recargar.", &[e]);
+            self.keep(msg);
             return false;
         }
         match self.cfg.save() {
@@ -552,13 +568,18 @@ impl App {
                 }
                 // The service starts only the parts in use, so a change needs a fresh start.
                 if parts_changed && fluxdeck_core::paths::service_running() {
-                    std::thread::spawn(fluxdeck_core::paths::restart_service);
+                    let flag = self.restarting.clone();
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    std::thread::spawn(move || {
+                        let _ = fluxdeck_core::paths::restart_service();
+                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                    });
                 }
                 self.save_failed = None;
                 true
             }
             Err(e) => {
-                self.notice = tf("No se pudo guardar: {}", &[&e.to_string()]);
+                self.keep(tf("No se pudo guardar: {}", &[&e.to_string()]));
                 self.save_failed = Some(Instant::now());
                 false
             }
@@ -574,7 +595,7 @@ impl App {
                 self.notice = t("Recargado").into();
             }
             Err(e) => {
-                self.notice = e.clone();
+                self.keep(e.clone());
                 self.blocked = Some(e);
             }
         }
@@ -607,6 +628,9 @@ impl App {
     fn poll(&mut self, ctx: &egui::Context) {
         if self.live_checked.elapsed() > Duration::from_millis(500) {
             self.live = State::read();
+            if let Some(l) = self.live.as_ref().filter(|l| !l.model.is_empty()) {
+                self.last_model.clone_from(&l.model);
+            }
             self.live_checked = Instant::now();
         }
         if self.theme_checked.elapsed() > Duration::from_secs(2) {
@@ -625,7 +649,7 @@ impl App {
         // Notices fade after a few seconds.
         if self.notice != self.notice_at.0 {
             self.notice_at = (self.notice.clone(), Instant::now());
-        } else if !self.notice.is_empty() && self.notice_at.1.elapsed() > Duration::from_secs(6) {
+        } else if !self.notice.is_empty() && self.notice != self.sticky && self.notice_at.1.elapsed() > Duration::from_secs(6) {
             self.notice.clear();
             self.notice_at.0.clear();
         }
@@ -722,7 +746,7 @@ impl App {
             w.weak_bg_fill = f;
             w.corner_radius = CornerRadius::same(8);
             w.fg_stroke.color = text;
-            w.bg_stroke = Stroke::NONE;
+            w.bg_stroke = Stroke::new(1.0, mix(bg, text, 0.35));
         }
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, mix(bg, text, 0.12));
         v.widgets.noninteractive.fg_stroke.color = text;
@@ -819,7 +843,8 @@ impl App {
                         self.save();
                     }
                 } else {
-                    let (text, tip) = if self.dirty() { (t("Guardando…"), t("Se guarda solo al terminar el cambio")) } else { (t("Guardado ✓"), t("Los cambios se guardan solos")) };
+                    let restarting = self.restarting.load(std::sync::atomic::Ordering::Relaxed);
+                    let (text, tip) = if restarting { (t("Reiniciando servicio…"), t("Las partes cambiadas necesitan reiniciar el servicio")) } else if self.dirty() { (t("Guardando…"), t("Se guarda solo al terminar el cambio")) } else { (t("Guardado ✓"), t("Los cambios se guardan solos")) };
                     ui.label(RichText::new(text).weak().size(12.5)).on_hover_text(tip);
                 }
                 if ui.button(t("Recargar")).on_hover_text(t("Leer de nuevo el archivo, por si lo editaste a mano")).clicked() {
@@ -849,7 +874,7 @@ impl App {
                     }
                     ui.label(RichText::new("●").color(dot)).on_hover_text(&text);
                 }
-                if ui.available_width() > 120.0 {
+                if self.notice != self.sticky && ui.available_width() > 120.0 {
                     ui.add(egui::Label::new(RichText::new(&self.notice).weak()).truncate()).on_hover_text(&self.notice);
                 }
             });
@@ -1014,7 +1039,7 @@ impl App {
     /// With no profile yet: what one does, shown with an example, and the two ways to start.
     fn profiles_empty(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32) {
         ui.horizontal(|ui| {
-            ui.add_space(24.0);
+            ui.add_space(20.0);
             let width = (ui.available_width() - 80.0).clamp(280.0, 560.0);
             egui::Frame::new().fill(card).corner_radius(18).inner_margin(28).show(ui, |ui| ui.vertical(|ui| {
                 ui.set_width(width);
@@ -1024,7 +1049,7 @@ impl App {
                 ui.add_space(10.0);
                 for (step, text) in [
                     ("1", t("Abres Steam o un juego.")),
-                    ("2", t("El Chat sube al 100 % y la Música baja al 40 %; si quieres, también el deck cambia de página.")),
+                    ("2", t("El Chat sube al 100% y la Música baja al 40%; si quieres, también el deck cambia de página.")),
                     ("3", t("Cierras el juego y todo vuelve como estaba.")),
                 ] {
                     ui.horizontal_top(|ui| {
@@ -1083,7 +1108,7 @@ impl App {
         }
         ui.add_space(22.0);
         ui.horizontal(|ui| {
-            ui.add_space(24.0);
+            ui.add_space(20.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(t("Cambian solos cuando usas ciertas apps: la página del deck, el volumen de tus grupos o un comando. Al salir, todo vuelve como estaba.")).weak().size(13.0));
                 // The service says which desktop it follows; some cannot tell which window is active.
@@ -1107,7 +1132,7 @@ impl App {
             return;
         }
         ui.horizontal_top(|ui| {
-            ui.add_space(24.0);
+            ui.add_space(20.0);
             // The list.
             ui.vertical(|ui| {
                 ui.set_width(250.0);
@@ -1139,7 +1164,7 @@ impl App {
                         self.cfg.profiles.push(fluxdeck_core::profiles::Profile { id, name: t("Nuevo perfil").into(), ..Default::default() });
                         self.profile_sel = self.cfg.profiles.len() - 1;
                     }
-                    if !self.cfg.profiles.iter().any(|p| p.id == "juegos") && ui.button(t("Perfil de juegos")).on_hover_text(t("Con Steam y otros juegos: Chat al 100 %, Música al 40 %")).clicked() {
+                    if !self.cfg.profiles.iter().any(|p| p.id == "juegos") && ui.button(t("Perfil de juegos")).on_hover_text(t("Con Steam y otros juegos: Chat al 100%, Música al 40%")).clicked() {
                         self.cfg.profiles.push(fluxdeck_core::profiles::starter());
                         self.profile_sel = self.cfg.profiles.len() - 1;
                     }
@@ -1169,7 +1194,7 @@ impl App {
                             });
                             ui.add(TextEdit::singleline(&mut p.name).desired_width(240.0).font(egui::TextStyle::Heading));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(t("Quitar perfil")).clicked() {
+                                if confirm_button(ui, true, t("Quitar perfil"), t("¿Quitar el perfil?"), ("profile", i)) {
                                     remove = true;
                                 }
                             });
@@ -1532,7 +1557,7 @@ impl App {
                 // While searching every group shows; otherwise a click folds it.
                 let folded = q.is_empty() && self.folded.contains(&g);
                 let arrow = if folded { "▸" } else { "▾" };
-                let head = ui.add(egui::Label::new(RichText::new(format!("{arrow}  {}  ({})", g.to_uppercase(), items.len())).size(11.5).weak().strong()).sense(Sense::click()));
+                let head = ui.add(egui::Label::new(RichText::new(format!("{arrow}  {}  ({})", g, items.len())).size(12.5).weak().strong()).sense(Sense::click()));
                 if head.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && q.is_empty() {
                     if !self.folded.remove(&g) {
                         self.folded.insert(g.clone());
@@ -1805,7 +1830,7 @@ impl App {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(22.0);
             ui.horizontal(|ui| {
-                ui.add_space(24.0);
+                ui.add_space(20.0);
                 ui.vertical(|ui| {
                     ui.set_max_width(760.0);
                     ui.horizontal(|ui| {
@@ -1840,7 +1865,7 @@ impl App {
                     if fluxdeck_core::paths::set_startup(mode) {
                         self.startup = mode;
                     } else {
-                        self.notice = t("No se pudo cambiar el arranque automático").into();
+                        self.keep(t("No se pudo cambiar el arranque automático").into());
                     }
                 }
             }
@@ -2073,10 +2098,10 @@ impl App {
             if ui.button(t("Exportar")).clicked() {
                 match backup::export(self.backup_plugins) {
                     Ok(file) => {
-                        self.notice = tf("Respaldo guardado en {}", &[&file.display().to_string()]);
+                        self.keep(tf("Respaldo guardado en {}", &[&file.display().to_string()]));
                         self.backups = None;
                     }
-                    Err(e) => self.notice = tf("No se pudo exportar: {}", &[&e]),
+                    Err(e) => self.keep(tf("No se pudo exportar: {}", &[&e])),
                 }
             }
             if ui.button(t("Abrir carpeta")).clicked() {
@@ -2101,13 +2126,18 @@ impl App {
                 }
             });
             if ui.add_enabled(self.backup_pick.is_none(), egui::Button::new(t("Otro archivo…"))).clicked() {
-                let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
-                self.backup_pick = Some(slot.clone());
-                std::thread::spawn(move || {
-                    let out = Command::new("zenity").args(["--file-selection", "--file-filter=*.tar.gz"]).output();
-                    let file = out.ok().filter(|o| o.status.success()).map(|o| std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
-                    *slot.lock().unwrap() = Some(file);
-                });
+                let pickers: [(&str, &[&str]); 2] = [("zenity", &["--file-selection", "--file-filter=*.tar.gz"]), ("kdialog", &["--getopenfilename", ".", "*.tar.gz"])];
+                if let Some((prog, args)) = pickers.into_iter().find(|(p, _)| Command::new(p).arg("--version").output().is_ok()) {
+                    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+                    self.backup_pick = Some(slot.clone());
+                    std::thread::spawn(move || {
+                        let out = Command::new(prog).args(args).output();
+                        let file = out.ok().filter(|o| o.status.success()).map(|o| std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+                        *slot.lock().unwrap() = Some(file);
+                    });
+                } else {
+                    self.keep(t("Para elegir un archivo instala zenity o kdialog.").into());
+                }
             }
             import = confirm_button(ui, self.backup_choice.is_some(), t("Importar"), t("¿Reemplazar tu configuración?"), "backup-import");
         });
@@ -2119,9 +2149,9 @@ impl App {
                     if !done.missing_plugins.is_empty() {
                         msg += &tf(" · Vuelve a instalar: {}", &[&done.missing_plugins.join(", ")]);
                     }
-                    self.notice = msg;
+                    self.keep(msg);
                 }
-                Err(e) => self.notice = tf("No se importó: {}", &[&e]),
+                Err(e) => self.keep(tf("No se importó: {}", &[&e])),
             }
         }
     }
@@ -2235,6 +2265,11 @@ impl App {
         ui.add_space(14.0);
         if self.cfg.uses("devices") {
             self.settings_modules(ui, card);
+            ui.add_space(14.0);
+            ui.label(RichText::new(t("Programas de periféricos")).size(16.0).strong());
+            ui.label(RichText::new(t("Lo que hace falta para que cada marca funcione. Lo que falta se instala con un comando en una terminal; lo que está parado se abre desde aquí.")).weak().size(12.5));
+            ui.add_space(6.0);
+            self.devices.helpers_ui(ui, card, accent);
         }
         self.settings_integrations(ui, card, accent);
     }
@@ -2243,13 +2278,14 @@ impl App {
         ui.label(RichText::new(t("Módulos")).size(16.0).strong());
         ui.add_space(6.0);
         let mut corsair = self.cfg.module("corsair");
-        setting(ui, card, t("Periféricos Corsair"), t("Batería, cancelación de ruido y luces, a través de OpenLinkHub"), |ui| {
+        let about = if self.devices.corsair_connected() { t("Batería, cancelación de ruido y luces, a través de OpenLinkHub") } else { t("Batería, cancelación de ruido y luces de tus aparatos Corsair, a través de OpenLinkHub. No hay ninguno conectado ahora.") };
+        setting(ui, card, t("Periféricos Corsair"), about, |ui| {
             if toggle_switch(ui, &mut corsair) {
                 self.cfg.set_module("corsair", corsair);
                 self.redetect();
             }
         });
-        if corsair && !self.devices.running {
+        if corsair && !self.devices.running && self.devices.corsair_connected() {
             ui.label(RichText::new(t("OpenLinkHub no está corriendo. Instálalo y arráncalo: github.com/jurkovic-nikola/OpenLinkHub")).weak().size(12.5));
         }
         let mut rgb = self.cfg.module("openrgb");
@@ -2309,7 +2345,7 @@ impl App {
             });
             if let Some(result) = action {
                 if let Err(e) = result {
-                    self.notice = tf("Ryoku: {}", &[&e]);
+                    self.keep(tf("Ryoku: {}", &[&e]));
                 }
                 self.ryoku_widget = None;
             }
@@ -2579,7 +2615,20 @@ impl eframe::App for App {
         self.refresh(&ctx);
         self.sidebar(ui);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
-        self.home.set_active(self.view == View::Home, self.cfg.module("corsair"));
+        if !self.sticky.is_empty() && self.notice == self.sticky {
+            egui::Panel::top("sticky").show(ui, |ui| {
+                let text = RichText::new(format!("✕  {}", self.sticky)).color(Color32::from_rgb(229, 160, 72));
+                if ui.add(egui::Label::new(text).sense(Sense::click())).on_hover_text(t("Clic para cerrar")).clicked() {
+                    self.notice.clear();
+                    self.sticky.clear();
+                }
+            });
+        }
+        self.home.set_active(self.view == View::Home || self.view == View::Mic, self.cfg.module("corsair"));
+        // Before the early returns below, or pages that return would never start their readers.
+        self.mic.set_active(self.view == View::Mic && self.audio_tab == 1);
+        self.mixer.set_active((self.view == View::Mic && self.audio_tab == 0) || self.view == View::Home);
+        self.devices.set_active(self.view == View::Devices, self.view == View::Devices || self.view == View::Settings);
         if self.view == View::Home && self.welcome {
             let card = ui.visuals().faint_bg_color;
             let accent = self.accent();
@@ -2615,7 +2664,8 @@ impl eframe::App for App {
             let groups = self.cfg.groups.clone();
             let off = self.cfg.off.clone();
             let mixer = &mut self.mixer;
-            let go = egui::CentralPanel::default().show(ui, |ui| self.home.ui(ui, card, accent, self.service_up, live.as_ref(), self.cfg.module("corsair"), &|p| !off.iter().any(|o| o == p), |ui| mixer.mini(ui, accent, &groups))).inner;
+            let why = self.home.no_pipewire();
+            let go = egui::CentralPanel::default().show(ui, |ui| self.home.ui(ui, card, accent, self.service_up, live.as_ref(), self.cfg.module("corsair"), &|p| !off.iter().any(|o| o == p), |ui| mixer.mini(ui, accent, &groups, why))).inner;
             match go {
                 Some(home::Go::Deck) => self.view = View::Deck,
                 Some(home::Go::Audio) => self.view = View::Mic,
@@ -2637,9 +2687,6 @@ impl eframe::App for App {
             self.close_guard(&ctx);
             return;
         }
-        self.mic.set_active(self.view == View::Mic && self.audio_tab == 1);
-        self.mixer.set_active((self.view == View::Mic && self.audio_tab == 0) || self.view == View::Home);
-        self.devices.set_active(self.view == View::Devices);
         if std::mem::take(&mut self.store.changed) {
             self.redetect();
         }
@@ -2656,7 +2703,6 @@ impl eframe::App for App {
             egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.devices.ui(ui, card, accent);
-                    ui.add_space(14.0);
                     self.extra_keys_ui(ui, card);
                     ui.add_space(20.0);
                 });
@@ -2669,6 +2715,14 @@ impl eframe::App for App {
             let accent = self.accent();
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.add_space(14.0);
+                if let Some(why) = self.home.no_pipewire() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("●").color(Color32::from_rgb(229, 72, 77)));
+                        ui.label(t(why));
+                    });
+                    ui.add_space(8.0);
+                }
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
                     let tabs = self.audio_tabs();
@@ -2684,7 +2738,7 @@ impl eframe::App for App {
                     }
                 });
                 if self.audio_tab == 0 {
-                    match self.mixer.ui(ui, card, accent, &mut self.cfg.hidden_devices, &mut self.cfg.output_names, &self.cfg.groups.clone()) {
+                    match self.mixer.ui(ui, card, accent, &mut self.cfg.hidden_devices, &mut self.cfg.output_names, &self.cfg.groups.clone(), self.home.no_pipewire()) {
                         Some(mixer::Go::Effects) => self.audio_tab = 1,
                         Some(mixer::Go::Group(name, matcher)) => {
                             if !self.cfg.groups.iter().any(|g| g.apps.contains(&matcher)) {
@@ -2734,11 +2788,7 @@ impl eframe::App for App {
 }
 
 fn model_name(kind: &str) -> String {
-    match kind {
-        "Plus" => "Stream Deck +".into(),
-        "PlusXl" => "Stream Deck + XL".into(),
-        other => format!("Stream Deck {other}"),
-    }
+    config::model_name(kind)
 }
 
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -2770,7 +2820,7 @@ fn setting(ui: &mut egui::Ui, card: Color32, title: &str, about: &str, control: 
         } else {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_max_width(320.0);
+                    ui.set_max_width(460.0);
                     text(ui);
                 });
                 // Right-aligned, but the controls keep their reading order.

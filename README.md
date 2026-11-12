@@ -17,9 +17,19 @@ Son dos programas:
 - `fluxdeck-editor`: la ventana para configurarlo todo.
 
 Probado con un Stream Deck +, un Elgato XLR Dock y periféricos Corsair en Arch Linux con
-Hyprland y PipeWire. Los demás modelos que soporta
-[elgato-streamdeck](https://crates.io/crates/elgato-streamdeck) deberían funcionar con el
-servicio; el editor por ahora dibuja la distribución del +.
+Hyprland y PipeWire. El servicio y el editor toman la distribución del deck conectado
+(teclas, perillas y pantalla); sin deck, el editor usa la del último que vio.
+
+| Modelo | Estado |
+| --- | --- |
+| Stream Deck + | probado |
+| Stream Deck Mini | sin probar en hardware; cuéntanos si lo usas |
+| Stream Deck MK.2 | sin probar en hardware; cuéntanos si lo usas |
+| Stream Deck XL | sin probar en hardware; cuéntanos si lo usas |
+| Stream Deck Neo | sin probar en hardware; cuéntanos si lo usas |
+| Stream Deck Pedal | sin probar en hardware; cuéntanos si lo usas |
+
+En el Neo, sus dos botones táctiles cambian de página y su pantalla informativa aún no se usa.
 
 ## Qué hace
 
@@ -68,6 +78,9 @@ Funciona en cualquier distribución con glibc 2.35 o más nueva (Ubuntu 22.04+, 
 Fedora 36+, Arch, openSUSE Tumbleweed…). Necesitas `fontconfig`, `libudev` (systemd) y PipeWire
 con `wpctl`, `pw-dump` y `pw-record`: el volumen, el mezclador y los efectos no funcionan con
 PulseAudio solo (Ubuntu 22.04 lo trae de serie; desde 22.10 ya viene PipeWire).
+Opcionales, y los paquetes los recomiendan: `curl` (tiendas de íconos y de plugins), `tar`
+(respaldo), `bsdtar` o `unzip` (instalar plugins), `upower` (baterías inalámbricas) y `xprop` (perfiles en
+X11).
 
 En [Releases](https://github.com/safloresmo/fluxdeck/releases) (Linux x86_64):
 
@@ -85,6 +98,13 @@ y, dentro de su carpeta:
 dist/install.sh          # binarios en ~/.local/bin, servicio de usuario, lanzador e ícono
 dist/install.sh --udev   # además, la regla udev (pide tu contraseña)
 ```
+
+Para desinstalar: `dist/uninstall.sh` quita lo mismo que instaló `dist/install.sh`, con `--udev`
+también la regla udev y con `--purge` además tu configuración y tus datos (`~/.config/fluxdeck`,
+`~/.local/share/fluxdeck`, `~/.local/state/fluxdeck`); sin `--purge` se quedan. Con los paquetes:
+`sudo apt remove fluxdeck`, `sudo dnf remove fluxdeck` o `sudo zypper remove fluxdeck`; también
+dejan tu configuración. Si lo habías activado con `systemctl --user enable`, queda un enlace
+suelto que se quita con `systemctl --user disable fluxdeck`.
 
 Desde el código hace falta además Rust; `dist/install.sh` compila antes de instalar.
 

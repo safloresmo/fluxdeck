@@ -31,6 +31,11 @@ pub fn start() {
                         }
                         spawn(&new).map(|c| (new, c))
                     }
+                    // A file that exists but does not parse (half saved): keep the chain as it is.
+                    (old, None) if effects::path().exists() => {
+                        eprintln!("fluxdeck: effects.toml not read, keeping the chain as it was");
+                        old.filter(|_| !died)
+                    }
                     (Some((_, mut c)), None) => {
                         let _ = c.kill();
                         let _ = c.wait();

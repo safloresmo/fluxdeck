@@ -34,7 +34,10 @@ pub fn start() {
                 let mtime = std::fs::metadata(config::path()).and_then(|m| m.modified()).ok();
                 if mtime != seen {
                     seen = mtime;
-                    groups = Config::load().map(|c| c.groups).unwrap_or_default();
+                    match Config::load() {
+                        Ok(c) => groups = c.groups,
+                        Err(e) => eprintln!("fluxdeck: config.toml not read, keeping the groups as they were: {e}"),
+                    }
                 }
                 step(&mut run, &mix, &groups);
             } else if run.sink.is_some() || run.sends.is_some() {

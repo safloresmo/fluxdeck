@@ -29,7 +29,7 @@ struct Switcher {
 
 impl Switcher {
     fn focus(&mut self, class: &str, title: &str) {
-        let cfg = Config::load().unwrap_or_default();
+        let Ok(cfg) = Config::load().map_err(|e| eprintln!("fluxdeck: config.toml not read, profiles unchanged: {e}")) else { return };
         let next = profiles::for_window(&cfg.profiles, class, title).cloned();
         if next.as_ref().map(|p| &p.id) == self.active.as_ref().map(|p| &p.id) {
             return;
@@ -58,7 +58,11 @@ impl Switcher {
                 let _ = self.tx.send(Msg::ProfilePage(Some(p.page.clone())));
             }
             if !p.command.trim().is_empty() {
-                let _ = crate::shell(&p.command, 0).stdout(std::process::Stdio::null()).spawn();
+                if let Ok(mut c) = crate::shell(&p.command, 0).stdout(std::process::Stdio::null()).spawn() {
+                    std::thread::spawn(move || {
+                        let _ = c.wait();
+                    });
+                }
             }
             eprintln!("fluxdeck: profile «{}» on", p.name);
         }
@@ -77,6 +81,7 @@ mod tests {
 
     #[test]
     fn entering_and_leaving_a_profile() {
+        let _env = crate::tests::ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("fluxdeck-profile-test-{}", std::process::id()));
         // Config, state and runtime files all go to a throwaway folder.
         unsafe {

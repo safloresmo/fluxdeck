@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 fluxdeck-core.workspace = true
-elgato-streamdeck = "0.14"
+elgato-streamdeck = "=0.14.0"
 notify = "8"
 libc = "0.2"
 serde_json = "1"

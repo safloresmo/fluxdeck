@@ -185,7 +185,7 @@ impl Store {
         rows(ui, installed.len(), vec2(328.0, 72.0), |ui, i| {
             let p = &installed[i];
             card_frame(card).inner_margin(14).show(ui, |ui| {
-                ui.set_width(300.0);
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     let icon = plugins::image_file(&p.path, &p.manifest.icon).map(|f| f.display().to_string()).unwrap_or_default();
                     if let Some(tex) = self.local_icon(ui.ctx(), &icon) {
@@ -258,7 +258,7 @@ impl Store {
         rows(ui, shown.len(), vec2(328.0, 146.0), |ui, i| {
             let e = shown[i];
             card_frame(card).inner_margin(14).show(ui, |ui| {
-                ui.set_width(300.0);
+                ui.set_width(ui.available_width());
                 ui.set_height(118.0);
                 ui.horizontal(|ui| {
                     // Icons are fetched only for cards that get drawn.
@@ -308,6 +308,8 @@ impl Store {
 /// Lays out `n` cells of a fixed size in rows that fill the width.
 fn rows(ui: &mut egui::Ui, n: usize, size: egui::Vec2, mut cell: impl FnMut(&mut egui::Ui, usize)) {
     let per_row = ((ui.available_width() - 40.0) / (size.x + 10.0)).floor().max(1.0) as usize;
+    // The spare width is shared out so the right edge is not left empty.
+    let size = vec2(((ui.available_width() - 40.0 - 10.0 * (per_row as f32 - 1.0)) / per_row as f32).floor(), size.y);
     for start in (0..n).step_by(per_row) {
         // Top-aligned: cards whose content is shorter must not sink to the middle of the row.
         ui.horizontal_top(|ui| {

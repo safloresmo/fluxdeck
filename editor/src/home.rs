@@ -28,6 +28,7 @@ struct Summary {
     dock: bool,
     batteries: Vec<(String, Option<u64>, u64)>,
     olh_running: bool,
+    corsair_usb: bool,
     plugins: usize,
     plugins_off: usize,
     plugins_broken: Vec<String>,
@@ -72,6 +73,7 @@ fn gather(corsair_on: bool) -> Summary {
         dock: std::path::Path::new("/proc/asound/Dock").exists(),
         batteries,
         olh_running,
+        corsair_usb: corsair_on && fluxdeck_core::helpers::corsair_connected(),
         plugins: all.len(),
         plugins_off: all.len() - on.len(),
         plugins_broken: on.iter().filter(|p| p.missing().is_some()).map(|p| p.manifest.name.clone()).collect(),
@@ -104,6 +106,10 @@ impl Home {
         Home { latest, active, corsair }
     }
 
+    pub fn no_pipewire(&self) -> Option<&'static str> {
+        self.latest.lock().unwrap().no_pipewire
+    }
+
     pub fn set_active(&self, on: bool, corsair_on: bool) {
         self.active.store(on, Ordering::Relaxed);
         self.corsair.store(corsair_on, Ordering::Relaxed);
@@ -129,7 +135,7 @@ impl Home {
         if let Some(why) = s.no_pipewire.filter(|_| uses("mic") || uses("mixer")) {
             alerts.push((red, t(why).into(), None));
         }
-        if uses("devices") && corsair_on && !s.olh_running {
+        if uses("devices") && corsair_on && s.corsair_usb && !s.olh_running {
             alerts.push((amber, t("OpenLinkHub no está corriendo: los periféricos Corsair no responden.").into(), Some((t("Ver periféricos"), Go::Devices))));
         }
         for (name, _, level) in s.batteries.iter().filter(|b| b.2 <= 20 && uses("devices")) {
@@ -142,12 +148,12 @@ impl Home {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(22.0);
             ui.horizontal(|ui| {
-                ui.add_space(24.0);
+                ui.add_space(20.0);
                 ui.vertical(|ui| {
                     let (mark, text, color) = if alerts.is_empty() {
                         ("\u{f05e0}", t("Todo en orden").to_string(), accent)
                     } else {
-                        ("\u{f0026}", tf("{} cosas necesitan atención", &[&alerts.len().to_string()]), amber)
+                        ("\u{f0026}", if alerts.len() == 1 { t("1 cosa necesita atención").to_string() } else { tf("{} cosas necesitan atención", &[&alerts.len().to_string()]) }, amber)
                     };
                     ui.label(RichText::new(format!("{mark}  {text}")).color(color).size(15.0));
                 });
@@ -262,7 +268,7 @@ impl Home {
 
 fn pad(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
-        ui.add_space(24.0);
+        ui.add_space(20.0);
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - 24.0);
             add(ui);

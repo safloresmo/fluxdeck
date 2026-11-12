@@ -64,23 +64,39 @@ pub struct Need {
     pub fix: Option<Fix>,
 }
 
-/// Helpers for a USB device by its vendor and product name. Only devices with a HID interface are
-/// asked about, so webcams and drives of the same brands are left out.
-fn helpers_for(vendor: &str, product: &str) -> Vec<Helper> {
-    // shortcut: headsets are told apart by name; HeadsetControl's own list would be exact once installed.
-    let p = product.to_lowercase();
-    let headset = ["headset", "arctis", "cloud", "astro", "virtuoso"].iter().any(|w| p.contains(w));
-    match vendor {
-        "1b1c" => vec![Helper::OpenLinkHub],
-        "046d" | "1038" | "0951" | "03f0" if headset => vec![Helper::HeadsetControl],
-        // Logitech, SteelSeries, HyperX, Razer, ASUS, MSI, ITE (Gigabyte boards), NZXT, Cooler Master, Wooting.
-        "046d" | "1038" | "0951" | "03f0" | "1532" | "0b05" | "0db0" | "048d" | "1e71" | "2516" | "31e3" => vec![Helper::OpenRgb],
-        _ => Vec::new(),
-    }
+/// A connected USB device with a HID interface.
+#[derive(Debug, Clone, PartialEq)]
+struct Usb {
+    vendor: String,
+    id: String,
+    name: String,
 }
 
-/// (vendor, product name) of every connected USB device with a HID interface.
-fn usb_hid(root: &Path) -> Vec<(String, String)> {
+/// Helpers for a USB device. Only devices with a HID interface are asked about, so webcams and
+/// drives of the same brands are left out. `supported` is what HeadsetControl itself lists, when it is installed.
+fn helpers_for(u: &Usb, supported: Option<&[(String, String)]>) -> Vec<Helper> {
+    let p = u.name.to_lowercase();
+    let headset = match supported {
+        Some(list) => list.iter().any(|(v, i)| *v == u.vendor && *i == u.id),
+        // shortcut: without HeadsetControl, headsets are told apart by name; its own list is used once installed.
+        None => ["046d", "1038", "0951", "03f0"].contains(&u.vendor.as_str()) && ["headset", "arctis", "cloud", "astro", "virtuoso"].iter().any(|w| p.contains(w)),
+    };
+    let mut out = Vec::new();
+    if u.vendor == "1b1c" {
+        out.push(Helper::OpenLinkHub);
+    }
+    // Corsair headsets go through OpenLinkHub.
+    if headset && u.vendor != "1b1c" {
+        out.push(Helper::HeadsetControl);
+    // Logitech, SteelSeries, HyperX, Razer, ASUS, MSI, ITE (Gigabyte boards), NZXT, Cooler Master, Wooting.
+    } else if ["046d", "1038", "0951", "03f0", "1532", "0b05", "0db0", "048d", "1e71", "2516", "31e3"].contains(&u.vendor.as_str()) {
+        out.push(Helper::OpenRgb);
+    }
+    out
+}
+
+/// Every connected USB device with a HID interface.
+fn usb_hid(root: &Path) -> Vec<Usb> {
     let read = |p: &Path| std::fs::read_to_string(p).map(|s| s.trim().to_string()).unwrap_or_default();
     std::fs::read_dir(root)
         .into_iter()
@@ -89,8 +105,13 @@ fn usb_hid(root: &Path) -> Vec<(String, String)> {
         .map(|e| e.path())
         .filter(|d| d.join("idVendor").exists())
         .filter(|d| std::fs::read_dir(d).into_iter().flatten().flatten().any(|i| read(&i.path().join("bInterfaceClass")) == "03"))
-        .map(|d| (read(&d.join("idVendor")), read(&d.join("product"))))
+        .map(|d| Usb { vendor: read(&d.join("idVendor")), id: read(&d.join("idProduct")), name: read(&d.join("product")) })
         .collect()
+}
+
+/// Whether a Corsair device (USB vendor 1b1c) is plugged in.
+pub fn corsair_connected() -> bool {
+    usb_hid(Path::new("/sys/bus/usb/devices")).iter().any(|u| u.vendor == "1b1c")
 }
 
 fn state(h: Helper) -> State {
@@ -137,28 +158,43 @@ fn fix(h: Helper, state: &State) -> Option<Fix> {
     })
 }
 
-fn group(found: &[(String, String)]) -> Vec<(Helper, Vec<String>)> {
+fn group(found: &[Usb], supported: Option<&[(String, String)]>) -> Vec<(Helper, Vec<String>)> {
     let mut out: Vec<(Helper, Vec<String>)> = Vec::new();
-    for (vendor, product) in found {
-        for h in helpers_for(vendor, product) {
+    for u in found {
+        for h in helpers_for(u, supported) {
             match out.iter_mut().find(|(x, _)| *x == h) {
-                Some((_, names)) if !names.contains(product) => names.push(product.clone()),
+                Some((_, names)) if !names.contains(&u.name) => names.push(u.name.clone()),
                 Some(_) => {}
-                None => out.push((h, vec![product.clone()])),
+                None => out.push((h, vec![u.name.clone()])),
             }
         }
     }
     out
 }
 
+fn need(helper: Helper, devices: Vec<String>) -> Need {
+    let state = state(helper);
+    Need { fix: fix(helper, &state), helper, devices, state }
+}
+
+/// HeadsetControl's own list, asked only when its module is on: it can take seconds to answer.
+fn supported_if(on: bool) -> Option<Vec<(String, String)>> {
+    on.then(crate::headset::supported).flatten()
+}
+
 /// What the connected peripherals need, one entry per helper.
-pub fn needs() -> Vec<Need> {
-    group(&usb_hid(Path::new("/sys/bus/usb/devices")))
+pub fn needs(headset_on: bool) -> Vec<Need> {
+    let supported = supported_if(headset_on);
+    group(&usb_hid(Path::new("/sys/bus/usb/devices")), supported.as_deref()).into_iter().map(|(helper, devices)| need(helper, devices)).collect()
+}
+
+/// Every helper, with the connected devices that need it (none, for many).
+pub fn all(headset_on: bool) -> Vec<Need> {
+    let supported = supported_if(headset_on);
+    let mut found = group(&usb_hid(Path::new("/sys/bus/usb/devices")), supported.as_deref());
+    [Helper::OpenLinkHub, Helper::OpenRgb, Helper::HeadsetControl]
         .into_iter()
-        .map(|(helper, devices)| {
-            let state = state(helper);
-            Need { fix: fix(helper, &state), helper, devices, state }
-        })
+        .map(|h| need(h, found.iter_mut().find(|(x, _)| *x == h).map(|(_, d)| std::mem::take(d)).unwrap_or_default()))
         .collect()
 }
 
@@ -166,25 +202,46 @@ pub fn needs() -> Vec<Need> {
 mod tests {
     use super::*;
 
+    fn usb(vendor: &str, id: &str, name: &str) -> Usb {
+        Usb { vendor: vendor.into(), id: id.into(), name: name.into() }
+    }
+
+    fn sample() -> Vec<Usb> {
+        vec![
+            usb("1b1c", "1b8c", "CORSAIR SLIPSTREAM WIRELESS USB Receiver"),
+            usb("1b1c", "1b8c", "CORSAIR SLIPSTREAM WIRELESS USB Receiver"),
+            usb("1b1c", "2a02", "CORSAIR VIRTUOSO MAX WIRELESS Gaming Receiver"),
+            usb("046d", "c539", "G502 LIGHTSPEED"),
+            usb("046d", "0aba", "PRO X Wireless Gaming Headset"),
+            usb("0db0", "0076", "MYSTIC LIGHT"),
+            usb("0fd9", "0084", "Stream Deck Plus"),
+        ]
+    }
+
     #[test]
     fn groups_devices_by_helper() {
-        let found: Vec<(String, String)> = [
-            ("1b1c", "CORSAIR SLIPSTREAM WIRELESS USB Receiver"),
-            ("1b1c", "CORSAIR SLIPSTREAM WIRELESS USB Receiver"),
-            ("1b1c", "CORSAIR VIRTUOSO MAX WIRELESS Gaming Receiver"),
-            ("046d", "G502 LIGHTSPEED"),
-            ("046d", "PRO X Wireless Gaming Headset"),
-            ("0db0", "MYSTIC LIGHT"),
-            ("0fd9", "Stream Deck Plus"),
-        ]
-        .iter()
-        .map(|(v, p)| (v.to_string(), p.to_string()))
-        .collect();
-        let g = group(&found);
+        let g = group(&sample(), None);
         assert_eq!(g.len(), 3);
         assert_eq!(g[0], (Helper::OpenLinkHub, vec!["CORSAIR SLIPSTREAM WIRELESS USB Receiver".into(), "CORSAIR VIRTUOSO MAX WIRELESS Gaming Receiver".into()]));
         assert_eq!(g[1], (Helper::OpenRgb, vec!["G502 LIGHTSPEED".into(), "MYSTIC LIGHT".into()]));
         assert_eq!(g[2], (Helper::HeadsetControl, vec!["PRO X Wireless Gaming Headset".into()]));
+    }
+
+    #[test]
+    fn installed_headsetcontrol_decides_what_is_a_headset() {
+        // A headset whose name has no known word, and a mouse whose name has one.
+        let found = [usb("1038", "12ad", "Odd Buds"), usb("046d", "c08b", "Cloud Mouse")];
+        let listed = vec![("1038".to_string(), "12ad".to_string())];
+        let g = group(&found, Some(&listed));
+        assert_eq!(g, vec![(Helper::HeadsetControl, vec!["Odd Buds".into()]), (Helper::OpenRgb, vec!["Cloud Mouse".into()])]);
+        let g = group(&found, None);
+        assert_eq!(g, vec![(Helper::OpenRgb, vec!["Odd Buds".into()]), (Helper::HeadsetControl, vec!["Cloud Mouse".into()])]);
+    }
+
+    #[test]
+    fn no_corsair_vendor_no_openlinkhub() {
+        let found: Vec<Usb> = sample().into_iter().filter(|u| u.vendor != "1b1c").collect();
+        assert!(group(&found, None).iter().all(|(h, _)| *h != Helper::OpenLinkHub));
     }
 
     #[test]

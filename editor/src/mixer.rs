@@ -84,6 +84,8 @@ pub struct Mixer {
     routes: std::collections::BTreeMap<String, String>,
     stream: StreamMix,
     levels_read: Instant,
+    /// When the view last turned on; an empty snapshot after a few seconds means no audio, not loading.
+    since: Instant,
 }
 
 impl Mixer {
@@ -130,13 +132,26 @@ impl Mixer {
             routes: groups::routes(),
             stream: StreamMix::load(),
             levels_read: Instant::now(),
+            since: Instant::now(),
         }
     }
 
     pub fn set_active(&mut self, on: bool) {
+        if on && !self.active.load(Ordering::Relaxed) {
+            self.since = Instant::now();
+        }
         self.active.store(on, Ordering::Relaxed);
         if !on {
             self.stop_meters();
+        }
+    }
+
+    /// What to show while there is nothing to list: loading at first, then why there is no audio.
+    fn empty_note(&self, why: Option<&'static str>) -> &'static str {
+        if self.since.elapsed() < Duration::from_secs(3) {
+            t("Leyendo el audio…")
+        } else {
+            why.map_or(t("No se detecta el audio"), t)
         }
     }
 
@@ -193,7 +208,7 @@ impl Mixer {
     /// `hidden` lists devices the user took out of the menus and `names` their short names; changing
     /// either is a config edit.
     /// Laid out like Wave Link: a row per channel, a column per output, and a dot where each row plays.
-    pub fn ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32, hidden: &mut Vec<String>, names: &mut std::collections::BTreeMap<String, String>, all_groups: &[groups::Group]) -> Option<Go> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, card: Color32, accent: Color32, hidden: &mut Vec<String>, names: &mut std::collections::BTreeMap<String, String>, all_groups: &[groups::Group], why: Option<&'static str>) -> Option<Go> {
         self.sync(ui.ctx());
         ui.ctx().request_repaint_after(Duration::from_millis(40));
         let mut go = None;
@@ -207,7 +222,7 @@ impl Mixer {
         }
         if snap.channels.is_empty() {
             ui.add_space(30.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new(t("Leyendo el audio…")).weak()));
+            ui.vertical_centered(|ui| ui.label(RichText::new(self.empty_note(why)).weak()));
             return None;
         }
         self.hidden = hidden.clone();
@@ -360,7 +375,7 @@ impl Mixer {
 
     /// The home page's quick controls: the microphone in use and every group, each with its mute
     /// and fader; changes go out as on the full mixer.
-    pub fn mini(&mut self, ui: &mut egui::Ui, accent: Color32, all_groups: &[groups::Group]) {
+    pub fn mini(&mut self, ui: &mut egui::Ui, accent: Color32, all_groups: &[groups::Group], why: Option<&'static str>) {
         self.sync(ui.ctx());
         ui.ctx().request_repaint_after(Duration::from_millis(60));
         if self.levels_read.elapsed() > Duration::from_secs(2) && self.edited.elapsed() > Duration::from_secs(2) {
@@ -369,7 +384,7 @@ impl Mixer {
         }
         let snap = self.shown.clone();
         if snap.channels.is_empty() {
-            ui.label(RichText::new(t("Leyendo el audio…")).weak());
+            ui.label(RichText::new(self.empty_note(why)).weak());
             return;
         }
         let row = |ui: &mut egui::Ui, icon: &str, name: &str, sub: &str, muted: bool| {
@@ -440,30 +455,31 @@ impl Mixer {
                     } else if ui.small_button("\u{f04d2}").on_hover_text(t("Usar como predeterminada")).clicked() {
                         self.send(Op::Default(o.id));
                     }
-                    match &mut self.renaming {
-                        Some((name, text)) if *name == o.name => {
-                            let r = ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width()).hint_text(t("Nombre corto")));
-                            r.request_focus();
-                            if r.lost_focus() {
-                                let short = text.trim().to_string();
-                                if short.is_empty() {
-                                    self.names.remove(&o.name);
-                                } else {
-                                    self.names.insert(o.name.clone(), short);
-                                }
-                                self.renaming = None;
-                            }
-                        }
-                        _ => {
-                            let r = ui.add(egui::Label::new(RichText::new(&o.label).size(13.5).strong()).truncate().sense(Sense::click()));
-                            if r.on_hover_cursor(egui::CursorIcon::Text).on_hover_text(tf("{} · clic para ponerle un nombre corto", &[&o.label])).clicked() {
-                                let current = self.names.get(&o.name).cloned().unwrap_or_default();
-                                self.renaming = Some((o.name.clone(), current));
-                            }
-                        }
-                    }
                 });
             });
+            // The name gets the whole column width on its own line.
+            match &mut self.renaming {
+                Some((name, text)) if *name == o.name => {
+                    let r = ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width()).hint_text(t("Nombre corto")));
+                    r.request_focus();
+                    if r.lost_focus() {
+                        let short = text.trim().to_string();
+                        if short.is_empty() {
+                            self.names.remove(&o.name);
+                        } else {
+                            self.names.insert(o.name.clone(), short);
+                        }
+                        self.renaming = None;
+                    }
+                }
+                _ => {
+                    let r = ui.add(egui::Label::new(RichText::new(&o.label).size(13.5).strong()).truncate().sense(Sense::click()));
+                    if r.on_hover_cursor(egui::CursorIcon::Text).on_hover_text(tf("{} · clic para ponerle un nombre corto", &[&o.label])).clicked() {
+                        let current = self.names.get(&o.name).cloned().unwrap_or_default();
+                        self.renaming = Some((o.name.clone(), current));
+                    }
+                }
+            }
             let (vol, mute) = fader(ui, o.volume, o.muted, level, accent, COL_W - 24.0 - 84.0);
             self.channel_changes(o, vol, mute);
         }));

@@ -21,6 +21,7 @@ fn has_extra_keys(bitmap: &str) -> bool {
 pub fn start(tx: Sender<Msg>) {
     std::thread::spawn(move || {
         let reading: Arc<Mutex<HashSet<PathBuf>>> = Arc::default();
+        let mut warned = false;
         loop {
             // New keyboards (or OpenLinkHub's virtual one) can show up at any time.
             for entry in std::fs::read_dir("/sys/class/input").into_iter().flatten().flatten() {
@@ -33,7 +34,16 @@ pub fn start(tx: Sender<Msg>) {
                 if !has_extra_keys(&bitmap) || reading.lock().unwrap().contains(&dev) {
                     continue;
                 }
-                let Ok(mut file) = std::fs::File::open(&dev) else { continue };
+                let mut file = match std::fs::File::open(&dev) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::PermissionDenied && !warned {
+                            warned = true;
+                            eprintln!("fluxdeck: cannot read {}; add your user to the input group for the extra keys", dev.display());
+                        }
+                        continue;
+                    }
+                };
                 reading.lock().unwrap().insert(dev.clone());
                 let (tx, reading) = (tx.clone(), reading.clone());
                 std::thread::spawn(move || {

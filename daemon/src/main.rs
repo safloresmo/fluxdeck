@@ -112,10 +112,10 @@ fn daemon() {
         libc::mallopt(libc::M_ARENA_MAX, 2);
     }
     // One copy at a time: the desktop's startup list and systemd may both try.
-    if fluxdeck_core::paths::service_running() {
+    let Some(_instance) = fluxdeck_core::paths::lock_instance() else {
         eprintln!("fluxdeck: already running");
         return;
-    }
+    };
     let (tx, rx) = channel();
     let _watcher = watch(tx.clone());
     // Parts switched off do not run at all; the editor restarts the service when they change.
@@ -173,6 +173,7 @@ fn daemon() {
                     Ok(deck) => {
                         failing = false;
                         eprintln!("fluxdeck: connected to {kind:?} ({serial})");
+                        config::remember_model(&format!("{kind:?}"));
                         if let Err(e) = Session::new(Some(deck), kind, tx.clone(), host.clone(), &serial, fluxdeck_core::remote::MAIN).run(&rx, || false) {
                             eprintln!("fluxdeck: lost the deck: {e}");
                         }
@@ -223,6 +224,12 @@ fn watch(tx: Sender<Msg>) -> Option<notify::RecommendedWatcher> {
         .map_err(|e| eprintln!("fluxdeck: cannot watch {}: {e}", dir.display()))
         .ok()?;
     let _ = w.watch(&plugins_dir, RecursiveMode::NonRecursive);
+    // A symlinked config.toml is saved at its target, so that folder needs watching too.
+    if let Some(target) = std::fs::canonicalize(config::path()).ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        && target != dir
+    {
+        let _ = w.watch(&target, RecursiveMode::NonRecursive);
+    }
     Some(w)
 }
 
@@ -391,7 +398,7 @@ impl Session {
 
     /// Runs until the hardware is lost, or, with no hardware, until `stop` (asked once a second) says so.
     fn run(mut self, rx: &Receiver<Msg>, mut stop: impl FnMut() -> bool) -> Result<(), StreamDeckError> {
-        if let Some(d) = &self.deck {
+        if let Some(d) = self.screen() {
             d.set_brightness(self.cfg.brightness)?;
         }
         self.start_meters();
@@ -519,7 +526,7 @@ impl Session {
         }
         if cfg.brightness != self.cfg.brightness
             && !self.asleep
-            && let Some(d) = &self.deck
+            && let Some(d) = self.screen()
         {
             d.set_brightness(cfg.brightness)?;
         }
@@ -561,9 +568,17 @@ impl Session {
         self.palette_seen = (Instant::now(), mtime);
     }
 
+    /// The current page's keys that this model has; the rest stay in the file but do nothing.
+    fn keys_here(&self) -> impl Iterator<Item = &fluxdeck_core::Key> {
+        self.cfg.pages[self.page].keys.iter().filter(|k| k.pos < self.kind.key_count())
+    }
+
+    fn dials_here(&self) -> impl Iterator<Item = &Dial> {
+        self.cfg.pages[self.page].dials.iter().filter(|d| d.pos < self.kind.encoder_count())
+    }
+
     fn start_meters(&mut self) {
-        let page = &self.cfg.pages[self.page];
-        let wanted: Vec<(String, Slot)> = page.dials.iter().filter(|d| !d.meter.is_empty()).map(|d| (d.meter.clone(), Slot::Dial(d.pos))).collect();
+        let wanted: Vec<(String, Slot)> = self.dials_here().filter(|d| !d.meter.is_empty()).map(|d| (d.meter.clone(), Slot::Dial(d.pos))).collect();
         for (node, slot) in wanted {
             let (tx, generation) = (self.tx.clone(), self.generation);
             if let Some(child) = fluxdeck_core::pw::meter(&node, move |level| tx.send(Msg::Meter { generation, slot, level }).is_ok()) {
@@ -591,8 +606,7 @@ impl Session {
 
     /// Plugin instances on the current page, optionally only those of one plugin.
     fn instances(&self, plugin: Option<&str>) -> Vec<String> {
-        let page = &self.cfg.pages[self.page];
-        let all = page.keys.iter().map(|k| &k.instance).chain(page.dials.iter().map(|d| &d.instance));
+        let all = self.keys_here().map(|k| &k.instance).chain(self.dials_here().map(|d| &d.instance));
         all.filter(|i| !i.is_empty())
             .filter(|i| plugin.is_none_or(|p| self.host.as_ref().and_then(|h| h.placed(i)).is_some_and(|x| x.plugin == p)))
             .cloned()
@@ -755,7 +769,7 @@ impl Session {
         let dark = lock::dark() || idle;
         if dark != self.asleep {
             self.asleep = dark;
-            if let Some(d) = &self.deck {
+            if let Some(d) = self.screen() {
                 d.set_brightness(if dark { 0 } else { self.cfg.brightness })?;
             }
         }
@@ -800,6 +814,8 @@ impl Session {
     fn act_on(&mut self, ev: DeviceStateUpdate) {
         let page = &self.cfg.pages[self.page];
         match ev {
+            // The Neo's two touch buttons come after its keys: previous and next page.
+            DeviceStateUpdate::ButtonDown(i) if i >= self.kind.key_count() => self.step_page(i > self.kind.key_count()),
             DeviceStateUpdate::ButtonDown(i) => {
                 let Some(key) = page.key(i).cloned() else { return };
                 self.plugin_event(Slot::Key(i), "keyDown", json!({}));
@@ -835,8 +851,8 @@ impl Session {
             }
             DeviceStateUpdate::TouchScreenPress(x, y) | DeviceStateUpdate::TouchScreenLongPress(x, y) => {
                 let hold = matches!(ev, DeviceStateUpdate::TouchScreenLongPress(..));
-                if let Some((w, _)) = self.kind.lcd_strip_size() {
-                    let segment = w / self.kind.encoder_count().max(1) as usize;
+                if let Some((_, seg, _)) = strip(self.kind) {
+                    let segment = seg as usize;
                     let i = (x as usize / segment) as u8;
                     let tap = json!({ "tapPos": [x as usize % segment, y], "hold": hold });
                     if !self.plugin_event(Slot::Dial(i), "touchTap", tap) {
@@ -844,18 +860,20 @@ impl Session {
                     }
                 }
             }
-            DeviceStateUpdate::TouchScreenSwipe((x0, _), (x1, _)) => {
-                // Folders are reached from their key, so swiping walks the other pages.
-                let n = self.cfg.pages.len();
-                let step = |p: usize| if x1 < x0 { (p + 1) % n } else { (p + n - 1) % n };
-                let mut next = step(self.page);
-                while self.cfg.pages[next].folder && next != self.page {
-                    next = step(next);
-                }
-                self.open_page(next);
-            }
+            DeviceStateUpdate::TouchScreenSwipe((x0, _), (x1, _)) => self.step_page(x1 < x0),
             _ => {}
         }
+    }
+
+    /// Opens the next or previous page; folders are reached from their key, so this skips them.
+    fn step_page(&mut self, forward: bool) {
+        let n = self.cfg.pages.len();
+        let step = |p: usize| if forward { (p + 1) % n } else { (p + n - 1) % n };
+        let mut next = step(self.page);
+        while self.cfg.pages[next].folder && next != self.page {
+            next = step(next);
+        }
+        self.open_page(next);
     }
 
     /// A tap on the phone goes the same way as the hardware's own press, twist or page swipe.
@@ -974,8 +992,7 @@ impl Session {
 
     fn poll_status(&mut self) {
         let now = Instant::now();
-        let page = &self.cfg.pages[self.page];
-        let slots: Vec<Slot> = page.keys.iter().map(|k| Slot::Key(k.pos)).chain(page.dials.iter().map(|d| Slot::Dial(d.pos))).collect();
+        let slots: Vec<Slot> = self.keys_here().map(|k| Slot::Key(k.pos)).chain(self.dials_here().map(|d| Slot::Dial(d.pos))).collect();
         for slot in slots {
             let Some((cmd, every)) = self.status_cmd(slot) else { continue };
             if self.busy.contains(&slot) || self.due.get(&slot).is_some_and(|d| *d > now) {
@@ -999,7 +1016,15 @@ impl Session {
         self.sent.insert(slot, hash) != Some(hash)
     }
 
+    /// The hardware, unless it has no screen (the Pedal): nothing is drawn or dimmed there.
+    fn screen(&self) -> Option<&Arc<StreamDeck>> {
+        self.deck.as_ref().filter(|_| self.kind.is_visual())
+    }
+
     fn draw(&mut self) -> Result<(), StreamDeckError> {
+        if !self.kind.is_visual() {
+            return Ok(());
+        }
         let page = self.cfg.pages[self.page].clone();
         let size = self.kind.key_image_format().size.0 as u32;
         for i in 0..self.kind.key_count() {
@@ -1025,16 +1050,13 @@ impl Session {
         if let Some(d) = &self.deck {
             d.flush()?;
         }
-        // shortcut: assumes a horizontal strip (Stream Deck +); the Plus XL strip is vertical.
-        if let Some((w, h)) = self.kind.lcd_strip_size() {
-            let n = self.kind.encoder_count().max(1);
-            let seg = (w / n as usize) as u32;
+        if let Some((n, seg, h)) = strip(self.kind) {
             for i in 0..n {
                 let slot = Slot::Dial(i);
                 let st = self.status.get(&slot).cloned();
                 let img = match page.dial(i) {
-                    Some(d) if !d.instance.is_empty() => self.plugin_dial_image(d, seg, h as u32),
-                    d => self.painter.dial(d, st.as_deref(), self.levels.get(&slot).copied(), &self.theme, seg, h as u32),
+                    Some(d) if !d.instance.is_empty() => self.plugin_dial_image(d, seg, h),
+                    d => self.painter.dial(d, st.as_deref(), self.levels.get(&slot).copied(), &self.theme, seg, h),
                 };
                 if self.changed(slot, &img) {
                     if remote::serving() {
@@ -1174,20 +1196,164 @@ fn mark(img: &mut RgbaImage, ok: bool) {
     }
 }
 
-fn model_name(kind: Kind) -> String {
-    match kind {
-        Kind::Plus => "Stream Deck +".into(),
-        Kind::PlusXl => "Stream Deck + XL".into(),
-        Kind::Neo => "Stream Deck Neo".into(),
-        Kind::Pedal => "Stream Deck Pedal".into(),
-        Kind::Mini | Kind::MiniMk2 | Kind::MiniDiscord | Kind::MiniMk2Module => "Stream Deck Mini".into(),
-        Kind::Xl | Kind::XlV2 => "Stream Deck XL".into(),
-        _ => "Stream Deck".into(),
+/// The dial strip as (segments, width and height of each); None for decks without dials.
+fn strip(kind: Kind) -> Option<(u8, u32, u32)> {
+    // shortcut: assumes a horizontal strip (Stream Deck +); the Plus XL strip is vertical.
+    let (w, h) = kind.lcd_strip_size()?;
+    // The Neo's screen has no dials and the crate cannot write regions to it.
+    let n = kind.encoder_count();
+    if n == 0 {
+        return None;
     }
+    Some((n, (w / n as usize) as u32, h as u32))
+}
+
+fn model_name(kind: Kind) -> String {
+    config::model_name(&format!("{kind:?}"))
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use super::*;
+    use fluxdeck_core::{Key, Page};
+    use std::sync::Mutex;
+
+    /// Tests that point the XDG folders elsewhere hold this: the environment is shared by all threads.
+    pub(crate) static ENV: Mutex<()> = Mutex::new(());
+
+    /// Config, state and runtime files go to a throwaway folder, never the real ones.
+    fn isolate() -> std::sync::MutexGuard<'static, ()> {
+        let guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("fluxdeck-model-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("run"));
+        // SAFETY: ENV keeps other tests from changing the environment meanwhile.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+            std::env::set_var("XDG_STATE_HOME", dir.join("state"));
+            std::env::set_var("XDG_RUNTIME_DIR", dir.join("run"));
+        }
+        guard
+    }
+
+    /// A deck-less session of `kind` with three pages: inicio, a folder and fin.
+    fn session(kind: Kind) -> Session {
+        let (tx, _rx) = channel();
+        let mut s = Session::new(None, kind, tx, None, "test", &format!("test-{kind:?}"));
+        let page = |name: &str, folder| Page { name: name.into(), folder, ..Default::default() };
+        s.cfg = Config { pages: vec![page("inicio", false), page("carpeta", true), page("fin", false)], ..Default::default() };
+        s
+    }
+
+    const MODELS: [Kind; 6] = [Kind::MiniMk2, Kind::Mk2, Kind::Xl, Kind::Neo, Kind::Pedal, Kind::Plus];
+
+    #[test]
+    fn each_model_has_its_shape() {
+        // (keys, key size in px, dial strip)
+        let want = [(6, 80, None), (15, 72, None), (32, 96, None), (8, 96, None), (3, 0, None), (8, 120, Some((4, 200, 100)))];
+        for (kind, (keys, size, dials)) in MODELS.into_iter().zip(want) {
+            assert_eq!((kind.key_count(), kind.key_image_format().size.0, strip(kind)), (keys, size, dials), "{kind:?}");
+        }
+        assert_eq!(strip(Kind::PlusXl).map(|s| s.0), Some(6));
+    }
+
+    #[test]
+    fn model_table_matches_the_crate() {
+        use Kind::*;
+        let all = [Original, OriginalV2, Mini, Xl, XlV2, Mk2, Mk2Scissor, MiniMk2, MiniDiscord, Neo, Pedal, Plus, PlusXl, MiniMk2Module, Mk2Module, Mk2ModuleScissor, XlV2Module];
+        assert_eq!(all.len(), config::DECKS.len());
+        for kind in all {
+            let name = format!("{kind:?}");
+            let shape = config::model_shape(&name).unwrap_or_else(|| panic!("{name} missing"));
+            assert_eq!(shape, (kind.column_count(), kind.row_count(), kind.encoder_count()), "{name}");
+            assert_eq!(kind.key_count(), shape.0 * shape.1, "{name}");
+        }
+        assert_eq!(model_name(Kind::MiniMk2), "Stream Deck Mini");
+    }
+
+    #[test]
+    fn neo_touch_buttons_turn_pages_like_the_swipe() {
+        let _env = isolate();
+        let mut s = session(Kind::Neo);
+        // Next skips the folder, previous too, and both wrap around.
+        s.input(DeviceStateUpdate::ButtonDown(9));
+        assert_eq!(s.page, 2);
+        s.input(DeviceStateUpdate::ButtonDown(9));
+        assert_eq!(s.page, 0);
+        s.input(DeviceStateUpdate::ButtonDown(8));
+        assert_eq!(s.page, 2);
+        s.input(DeviceStateUpdate::ButtonDown(8));
+        assert_eq!(s.page, 0);
+        s.input(DeviceStateUpdate::TouchScreenSwipe((100, 0), (0, 0)));
+        assert_eq!(s.page, 2);
+        s.input(DeviceStateUpdate::TouchScreenSwipe((0, 0), (100, 0)));
+        assert_eq!(s.page, 0);
+        // Releasing a touch button does nothing.
+        s.input(DeviceStateUpdate::ButtonUp(9));
+        assert_eq!(s.page, 0);
+    }
+
+    #[test]
+    fn plus_keys_do_not_turn_pages() {
+        let _env = isolate();
+        let mut s = session(Kind::Plus);
+        s.input(DeviceStateUpdate::ButtonDown(7));
+        assert_eq!(s.page, 0);
+    }
+
+    #[test]
+    fn only_screens_are_drawn() {
+        let _env = isolate();
+        for kind in MODELS {
+            let mut s = session(kind);
+            s.draw().unwrap();
+            let keys = s.sent.keys().filter(|k| matches!(k, Slot::Key(_))).count();
+            let dials = s.sent.keys().filter(|k| matches!(k, Slot::Dial(_))).count();
+            let want = if kind.is_visual() { kind.key_count() as usize } else { 0 };
+            assert_eq!((keys, dials), (want, kind.encoder_count() as usize), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn positions_the_model_lacks_are_ignored() {
+        let _env = isolate();
+        let key = |pos: u8| Key { pos, instance: format!("k{pos}"), ..Default::default() };
+        let dial = |pos: u8| Dial { pos, instance: format!("d{pos}"), ..Default::default() };
+        let (keys, dials): (Vec<Key>, Vec<Dial>) = ((0..40).map(key).collect(), (0..8).map(dial).collect());
+        for kind in MODELS {
+            let mut s = session(kind);
+            s.cfg.pages[0] = Page { name: "inicio".into(), keys: keys.clone(), dials: dials.clone(), ..Default::default() };
+            assert_eq!(s.keys_here().count(), kind.key_count() as usize, "{kind:?}");
+            assert_eq!(s.dials_here().count(), kind.encoder_count() as usize, "{kind:?}");
+            assert_eq!(s.instances(None).len(), (kind.key_count() + kind.encoder_count()) as usize, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_model_is_kept_in_the_state_folder_only_when_it_changes() {
+        let _env = isolate();
+        let file = fluxdeck_core::paths::state().join("model");
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(config::saved_model(), "");
+        config::remember_model("Neo");
+        assert_eq!(config::saved_model(), "Neo");
+        let at = std::fs::metadata(&file).unwrap().modified().unwrap();
+        config::remember_model("Neo");
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), at);
+        config::remember_model("Plus");
+        assert_eq!(config::saved_model(), "Plus");
+        assert!(!config::path().exists(), "config.toml is never written");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn stream_deck_plus_shape_is_fixed() {
+        let k = Kind::Plus;
+        assert_eq!((k.key_count(), k.key_image_format().size.0), (8, 120));
+        let (n, w, h) = strip(k).unwrap();
+        assert_eq!((n, w, h), (4, 200, 100));
+        assert_eq!((0..n).map(|i| i as u32 * w).collect::<Vec<_>>(), [0, 200, 400, 600]);
+    }
+
     #[test]
     fn status_commands_are_cut_off() {
         assert_eq!(super::status_text("echo 42%; echo second"), "42%");

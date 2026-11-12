@@ -155,7 +155,15 @@ pub fn install(e: &Entry) -> Result<Plugin, String> {
         }
         let out = work.join("x");
         let _ = std::fs::create_dir_all(&out);
-        let ok = Command::new("bsdtar").arg("-xf").arg(&archive).arg("-C").arg(&out).status().is_ok_and(|s| s.success());
+        // Plugins are zip files: bsdtar reads them, and so does unzip when bsdtar is not installed.
+        let unpack = |mut c: Command| c.status().map(|s| s.success());
+        let ok = match unpack({ let mut c = Command::new("bsdtar"); c.arg("-xf").arg(&archive).arg("-C").arg(&out); c }) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match unpack({ let mut c = Command::new("unzip"); c.arg("-qo").arg(&archive).arg("-d").arg(&out); c }) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(t("Hace falta bsdtar o unzip para instalar plugins.").into()),
+                r => r.is_ok_and(|ok| ok),
+            },
+            r => r.is_ok_and(|ok| ok),
+        };
         if !ok {
             return Err(t("No se pudo abrir el archivo del plugin.").into());
         }

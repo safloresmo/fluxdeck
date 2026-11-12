@@ -11,7 +11,7 @@ pub struct Device {
     pub serial: String,
     pub product: String,
     pub battery: bool,
-    /// OpenLinkHub's kind: 0 keyboard, 1 mouse, 2 headset.
+    /// 0 keyboard, 1 mouse, 2 headset (OpenLinkHub's numbers), 3 screen or cooling.
     pub kind: Option<u64>,
     pub anc: bool,
     pub lights: bool,
@@ -99,7 +99,6 @@ pub fn battery(serial: &str) -> Option<u64> {
 /// Visible devices; empty when OpenLinkHub is not running.
 pub fn devices() -> Vec<Device> {
     let Some(list) = http("GET", "/api/devices/", None) else { return Vec::new() };
-    let has_lcd = |serial: &str| http("GET", &format!("/api/devices/{serial}"), None).is_some_and(|d| d["device"]["HasLCD"] == true);
     let batteries = http("GET", "/api/batteryStats", None).unwrap_or_default();
     let mut out: Vec<Device> = list["devices"]
         .as_object()
@@ -107,15 +106,27 @@ pub fn devices() -> Vec<Device> {
         .flatten()
         .filter(|(_, d)| d["Hidden"] == false)
         .map(|(serial, d)| {
-            let p = profile(serial).unwrap_or_default();
+            let full = http("GET", &format!("/api/devices/{serial}"), None).unwrap_or_default();
+            let p = &full["device"]["DeviceProfile"];
+            let (anc, lcd) = (p["NoiseCancellation"].is_i64(), full["device"]["HasLCD"] == true);
+            // Only devices with a battery are in batteryStats, so the others are told apart by what they have.
+            let kind = batteries["data"][serial]["DeviceType"].as_u64().or(if lcd {
+                Some(3)
+            } else if p["Keyboards"].is_object() {
+                Some(0)
+            } else if anc {
+                Some(2)
+            } else {
+                None
+            });
             Device {
                 serial: serial.clone(),
                 product: d["Product"].as_str().unwrap_or(serial).to_string(),
                 battery: batteries["data"][serial]["Level"].is_u64(),
-                kind: batteries["data"][serial]["DeviceType"].as_u64(),
-                anc: p["NoiseCancellation"].is_i64(),
+                kind,
+                anc,
                 lights: p["RGBProfile"].is_string(),
-                lcd: has_lcd(serial),
+                lcd,
             }
         })
         .collect();
@@ -123,12 +134,13 @@ pub fn devices() -> Vec<Device> {
     out
 }
 
-/// Nerd Font glyph for the kind of device.
+/// Nerd Font glyph for the kind of device; no kind means a battery listing.
 pub fn icon(kind: Option<u64>) -> char {
     match kind {
         Some(0) => '\u{f030c}',
         Some(1) => '\u{f037d}',
         Some(2) => '\u{f02ce}',
+        Some(3) => '\u{f0210}',
         _ => '\u{f0079}',
     }
 }

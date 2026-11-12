@@ -37,10 +37,27 @@ pub fn runtime(file: &str) -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(format!("{NAME}-{file}"))
 }
 
-/// True when the service is up: it answers on its plugin port.
+fn open_lock() -> Option<std::fs::File> {
+    std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(runtime("lock")).ok()
+}
+
+/// Takes the one-instance lock; the caller keeps the file open for the life of the process.
+/// None when another service already holds it.
+pub fn lock_instance() -> Option<std::fs::File> {
+    let f = open_lock()?;
+    // service_running holds the lock for an instant while it looks; a real service holds it for good.
+    (0..3).any(|i| {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        f.try_lock().is_ok()
+    })
+    .then_some(f)
+}
+
+/// True when the service is up: another process holds the instance lock.
 pub fn service_running() -> bool {
-    let Some(port) = std::fs::read_to_string(runtime("plugins.port")).ok().and_then(|s| s.trim().parse::<u16>().ok()) else { return false };
-    std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), std::time::Duration::from_millis(150)).is_ok()
+    open_lock().is_some_and(|f| matches!(f.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock)))
 }
 
 fn systemctl(args: &[&str]) -> bool {
@@ -194,5 +211,29 @@ pub fn keep_private(path: &Path) {
         && m.permissions().mode() & 0o077 != 0
     {
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// Tests that point the XDG folders elsewhere hold this: the environment is shared by all threads.
+    pub(crate) static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn second_instance_is_refused() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("fluxdeck-lock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: ENV keeps other tests from changing the environment meanwhile.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &dir) };
+        assert!(!service_running());
+        let held = lock_instance().expect("first instance takes the lock");
+        assert!(lock_instance().is_none());
+        assert!(service_running());
+        drop(held);
+        assert!(!service_running());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

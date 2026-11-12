@@ -22,7 +22,11 @@ fn open_editor() {
     use std::os::unix::process::CommandExt;
     let bin = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(format!("{}-editor", fluxdeck_core::paths::NAME)))).filter(|p| p.is_file());
     let bin = bin.unwrap_or_else(|| format!("{}-editor", fluxdeck_core::paths::NAME).into());
-    let _ = std::process::Command::new(bin).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).process_group(0).spawn();
+    if let Ok(mut c) = std::process::Command::new(bin).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).process_group(0).spawn() {
+        std::thread::spawn(move || {
+            let _ = c.wait();
+        });
+    }
 }
 
 impl ksni::Tray for Tray {

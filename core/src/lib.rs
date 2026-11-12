@@ -9,6 +9,7 @@ pub mod helpers;
 pub mod mixer;
 pub mod openrgb;
 pub mod paths;
+pub mod peripherals;
 pub mod plugins;
 pub mod corsair;
 pub mod i18n;

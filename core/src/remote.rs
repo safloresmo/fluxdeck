@@ -2,7 +2,6 @@
 //! switched on; every request must carry the secret key the QR code holds, since keys run commands.
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Command;
 
 pub const PORT: u16 = 27080;
 
@@ -92,7 +91,16 @@ impl Remote {
     /// The settings, with a first phone (keeping an older single key, so its QR still works).
     pub fn load() -> Remote {
         crate::paths::keep_private(&path());
-        let mut r: Remote = std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut r: Remote = match std::fs::read_to_string(path()) {
+            Ok(t) => serde_json::from_str(&t).unwrap_or_else(|e| {
+                // Keep the unreadable file so saving never overwrites the paired phones.
+                let bad = path().with_extension("json.bad");
+                eprintln!("fluxdeck: remote.json is unreadable ({e}); kept as {}", bad.display());
+                let _ = std::fs::rename(path(), bad);
+                Remote::default()
+            }),
+            Err(_) => Remote::default(),
+        };
         if r.settle() {
             r.save();
         }
@@ -150,9 +158,13 @@ pub fn new_token() -> String {
 
 /// This computer's address on the local network: the one it uses to reach the internet.
 pub fn lan_ip() -> Option<String> {
-    let out = Command::new("ip").args(["-j", "-4", "route", "get", "1.1.1.1"]).output().ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    v[0]["prefsrc"].as_str().map(String::from)
+    // A UDP connect sends nothing; it only makes the kernel pick the outgoing address.
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("10.255.255.255:1").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if ip.is_private() => Some(ip.to_string()),
+        _ => None,
+    }
 }
 
 /// Whether a peer may use the deck: only addresses of local and private networks (home, VPN),

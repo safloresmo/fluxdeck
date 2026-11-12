@@ -18,7 +18,11 @@ pub fn start() {
             let mtime = std::fs::metadata(config::path()).and_then(|m| m.modified()).ok();
             if mtime != seen {
                 seen = mtime;
-                groups_now = Config::load().map(|c| c.groups).unwrap_or_default();
+                match Config::load() {
+                    Ok(c) => groups_now = c.groups,
+                    // Keep the last good groups; mtime changes again when the file is fixed.
+                    Err(e) => eprintln!("fluxdeck: config.toml not read, keeping the mixer as it was: {e}"),
+                }
                 if let Some((_, dirty)) = &feed {
                     dirty.store(true, Ordering::Relaxed);
                 }
@@ -38,6 +42,7 @@ pub fn start() {
             if let Some((child, dirty)) = &mut feed {
                 if matches!(child.try_wait(), Ok(Some(_))) {
                     feed = None;
+                    std::thread::sleep(Duration::from_secs(1));
                     continue;
                 }
                 // Group levels change from dials and the editor without touching config.toml: a slow pass covers them.

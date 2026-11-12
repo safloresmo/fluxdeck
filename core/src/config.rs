@@ -49,6 +49,51 @@ pub struct Config {
     pub pages: Vec<Page>,
 }
 
+/// The decks FluxDeck knows by model name: (name, what to call it, columns, rows, dials).
+pub const DECKS: [(&str, &str, u8, u8, u8); 17] = [
+    ("Plus", "Stream Deck +", 4, 2, 4),
+    ("PlusXl", "Stream Deck + XL", 9, 4, 6),
+    ("Neo", "Stream Deck Neo", 4, 2, 0),
+    ("Pedal", "Stream Deck Pedal", 3, 1, 0),
+    ("Mini", "Stream Deck Mini", 3, 2, 0),
+    ("MiniMk2", "Stream Deck Mini", 3, 2, 0),
+    ("MiniDiscord", "Stream Deck Mini", 3, 2, 0),
+    ("MiniMk2Module", "Stream Deck Mini", 3, 2, 0),
+    ("Xl", "Stream Deck XL", 8, 4, 0),
+    ("XlV2", "Stream Deck XL", 8, 4, 0),
+    ("XlV2Module", "Stream Deck XL", 8, 4, 0),
+    ("Original", "Stream Deck", 5, 3, 0),
+    ("OriginalV2", "Stream Deck", 5, 3, 0),
+    ("Mk2", "Stream Deck", 5, 3, 0),
+    ("Mk2Scissor", "Stream Deck", 5, 3, 0),
+    ("Mk2Module", "Stream Deck", 5, 3, 0),
+    ("Mk2ModuleScissor", "Stream Deck", 5, 3, 0),
+];
+
+/// What to call a deck, from its model name.
+pub fn model_name(model: &str) -> String {
+    DECKS.iter().find(|d| d.0 == model).map_or("Stream Deck", |d| d.1).into()
+}
+
+/// (columns, rows, dials) of a model name.
+pub fn model_shape(model: &str) -> Option<(u8, u8, u8)> {
+    DECKS.iter().find(|d| d.0 == model).map(|d| (d.2, d.3, d.4))
+}
+
+/// The last deck the service saw, kept in the state folder (config.toml is the user's): the editor draws its shape when none is plugged in.
+pub fn saved_model() -> String {
+    std::fs::read_to_string(crate::paths::state().join("model")).map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
+/// Writes the model only when it differs from the saved one.
+pub fn remember_model(model: &str) {
+    if saved_model() != model {
+        let dir = crate::paths::state();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("model"), model);
+    }
+}
+
 /// The parts of FluxDeck someone can do without: (id, name, what it is).
 pub const PARTS: [(&str, &str, &str); 7] = [
     ("deck", "Stream Deck", "Las teclas, perillas y la pantalla del deck"),
