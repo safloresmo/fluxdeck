@@ -1,6 +1,6 @@
 //! Ready-made actions for the editor's library. Each group only appears when what it needs is installed.
 use crate::i18n::{t, tf};
-use crate::{Dial, Key, corsair, headset, openrgb, plugins, pw, upower};
+use crate::{Dial, Key, corsair, headset, openrgb, plugins, pw, ratbag, upower};
 use std::path::Path;
 
 #[derive(Clone)]
@@ -37,6 +37,8 @@ pub struct Env {
     pub batteries: Vec<upower::Battery>,
     /// Headsets HeadsetControl sees.
     pub headsets: Vec<headset::Headset>,
+    /// Mice ratbagd sees.
+    pub mice: Vec<ratbag::Mouse>,
     /// Installed plugins that can run here.
     pub plugins: Vec<plugins::Plugin>,
 }
@@ -69,6 +71,7 @@ impl Env {
             rgb: if modules.iter().any(|m| m == "openrgb") { openrgb::devices() } else { Vec::new() },
             batteries: upower::batteries(),
             headsets: if modules.iter().any(|m| m == "headset") { headset::headsets() } else { Vec::new() },
+            mice: if modules.iter().any(|m| m == "mouse") { ratbag::mice() } else { Vec::new() },
         }
     }
 }
@@ -488,6 +491,30 @@ pub fn all(env: &Env) -> Vec<Preset> {
             );
         }
     }
+    for m in &env.mice {
+        let (id, name) = (sq(&m.id), title(&m.name));
+        let mut push = |what: &'static str, item: Item| out.push(Preset { group: t("Ratones").into(), name: tf(what, &[&name]), item });
+        let key = |label: String, icon: char, command: String, status: String| Item::Key(Key { label, icon: icon.to_string(), command, status, interval: 30.0, ..Default::default() });
+        if !m.dpis().is_empty() {
+            push("DPI + de {}", key("DPI +".into(), corsair::icon(Some(1)), format!("fluxdeck mouse dpi {id} up"), format!("fluxdeck mouse dpi {id}")));
+            push("DPI − de {}", key("DPI −".into(), corsair::icon(Some(1)), format!("fluxdeck mouse dpi {id} down"), format!("fluxdeck mouse dpi {id}")));
+            push(
+                "DPI de {}",
+                Item::Dial(Dial {
+                    label: name.clone(),
+                    icon: corsair::icon(Some(1)).to_string(),
+                    right: format!("fluxdeck mouse dpi {id} up"),
+                    left: format!("fluxdeck mouse dpi {id} down"),
+                    status: format!("fluxdeck mouse dpi {id}"),
+                    interval: 10.0,
+                    ..Default::default()
+                }),
+            );
+        }
+        if m.profiles.iter().filter(|p| !p.disabled).count() > 1 {
+            push("Siguiente perfil de {}", key(t("Perfil").into(), corsair::icon(Some(1)), format!("fluxdeck mouse profile {id} next"), format!("fluxdeck mouse profile {id}")));
+        }
+    }
     for p in &env.plugins {
         for a in &p.manifest.actions {
             let icon = plugins::image_file(&p.path, &a.icon).or_else(|| a.states.first().and_then(|s| plugins::image_file(&p.path, &s.image)));
@@ -547,6 +574,20 @@ mod tests {
         assert!(cmd("Hyprland", all).unwrap().starts_with("grim"));
         assert_eq!(cmd("GNOME", |c| c == "flameshot").as_deref(), Some("flameshot gui"));
         assert_eq!(cmd("X-Cinnamon", |_| false), None);
+    }
+
+    #[test]
+    fn mouse_actions_need_a_ratbagd_mouse() {
+        use crate::ratbag::{Mouse, Profile, Resolution};
+        let group = |env: &super::Env| super::all(env).into_iter().filter(|p| p.group == "Ratones" || p.group == "Mice").map(|p| p.name).collect::<Vec<_>>();
+        let mut env = super::Env::default();
+        assert!(group(&env).is_empty());
+        let r = Resolution { active: true, dpi: 800, dpis: vec![800, 1600], ..Default::default() };
+        let p = |index, active| Profile { index, active, ..Default::default() };
+        env.mice = vec![Mouse { id: "usb:046d:c077:0".into(), name: "G502 HERO".into(), resolutions: vec![r], profiles: vec![p(0, true), p(1, false)], ..Default::default() }];
+        assert_eq!(group(&env).len(), 4);
+        env.mice[0].profiles.truncate(1);
+        assert_eq!(group(&env).len(), 3);
     }
 
     #[test]

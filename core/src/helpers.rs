@@ -1,4 +1,4 @@
-//! The program each connected peripheral needs (OpenLinkHub, OpenRGB, HeadsetControl), whether it
+//! The program each connected peripheral needs (OpenLinkHub, OpenRGB, HeadsetControl, ratbagd), whether it
 //! is ready, and how to get it ready.
 use crate::effects::{on_path, package_manager};
 use std::path::Path;
@@ -8,6 +8,7 @@ pub enum Helper {
     OpenLinkHub,
     OpenRgb,
     HeadsetControl,
+    Ratbag,
 }
 
 impl Helper {
@@ -16,6 +17,7 @@ impl Helper {
             Helper::OpenLinkHub => "OpenLinkHub",
             Helper::OpenRgb => "OpenRGB",
             Helper::HeadsetControl => "HeadsetControl",
+            Helper::Ratbag => "ratbagd",
         }
     }
 
@@ -25,6 +27,7 @@ impl Helper {
             Helper::OpenLinkHub => "corsair",
             Helper::OpenRgb => "openrgb",
             Helper::HeadsetControl => "headset",
+            Helper::Ratbag => "mouse",
         }
     }
 
@@ -33,6 +36,7 @@ impl Helper {
             Helper::OpenLinkHub => "https://github.com/jurkovic-nikola/OpenLinkHub",
             Helper::OpenRgb => "https://openrgb.org",
             Helper::HeadsetControl => "https://github.com/Sapd/HeadsetControl",
+            Helper::Ratbag => "https://github.com/libratbag/libratbag",
         }
     }
 }
@@ -70,6 +74,8 @@ struct Usb {
     vendor: String,
     id: String,
     name: String,
+    /// Has a HID interface that speaks the mouse protocol.
+    mouse: bool,
 }
 
 /// Helpers for a USB device. Only devices with a HID interface are asked about, so webcams and
@@ -92,6 +98,10 @@ fn helpers_for(u: &Usb, supported: Option<&[(String, String)]>) -> Vec<Helper> {
     } else if ["046d", "1038", "0951", "03f0", "1532", "0b05", "0db0", "048d", "1e71", "2516", "31e3"].contains(&u.vendor.as_str()) {
         out.push(Helper::OpenRgb);
     }
+    // libratbag's mice are Logitech, SteelSeries and Roccat; Corsair is not among them.
+    if u.mouse && ["046d", "1038", "1e7d"].contains(&u.vendor.as_str()) {
+        out.push(Helper::Ratbag);
+    }
     out
 }
 
@@ -105,7 +115,11 @@ fn usb_hid(root: &Path) -> Vec<Usb> {
         .map(|e| e.path())
         .filter(|d| d.join("idVendor").exists())
         .filter(|d| std::fs::read_dir(d).into_iter().flatten().flatten().any(|i| read(&i.path().join("bInterfaceClass")) == "03"))
-        .map(|d| Usb { vendor: read(&d.join("idVendor")), id: read(&d.join("idProduct")), name: read(&d.join("product")) })
+        // Protocol 02 of a HID interface is the mouse.
+        .map(|d| {
+            let mouse = std::fs::read_dir(&d).into_iter().flatten().flatten().any(|i| read(&i.path().join("bInterfaceClass")) == "03" && read(&i.path().join("bInterfaceProtocol")) == "02");
+            Usb { vendor: read(&d.join("idVendor")), id: read(&d.join("idProduct")), name: read(&d.join("product")), mouse }
+        })
         .collect()
 }
 
@@ -119,11 +133,13 @@ fn state(h: Helper) -> State {
         Helper::OpenLinkHub => ["/usr/lib/systemd/system", "/etc/systemd/system"].iter().any(|d| Path::new(d).join("openlinkhub.service").exists()) || on_path("OpenLinkHub"),
         Helper::OpenRgb => on_path("openrgb"),
         Helper::HeadsetControl => on_path("headsetcontrol"),
+        Helper::Ratbag => crate::ratbag::installed(),
     };
     let running = match h {
         Helper::OpenLinkHub => crate::corsair::running(),
         Helper::OpenRgb => crate::openrgb::running(),
-        Helper::HeadsetControl => installed,
+        // ratbagd starts through D-Bus when asked.
+        Helper::HeadsetControl | Helper::Ratbag => installed,
     };
     if running {
         State::Ready
@@ -155,6 +171,8 @@ fn fix(h: Helper, state: &State) -> Option<Fix> {
         (Helper::OpenRgb, State::Stopped) => Fix::Launch(vec!["openrgb".into(), "--server".into(), "--startminimized".into()]),
         (Helper::OpenRgb, State::Missing) => install("openrgb", &["pacman", "dnf", "zypper"]).map(Fix::Terminal).unwrap_or_else(page),
         (Helper::HeadsetControl, _) => install("headsetcontrol", &["pacman", "dnf"]).map(Fix::Terminal).unwrap_or_else(page),
+        // The package has a different name in each distro.
+        (Helper::Ratbag, _) => install("libratbag", &["pacman"]).or_else(|| install("ratbagd", &["apt", "zypper"])).or_else(|| install("libratbag-ratbagd", &["dnf"])).map(Fix::Terminal).unwrap_or_else(page),
     })
 }
 
@@ -192,7 +210,7 @@ pub fn needs(headset_on: bool) -> Vec<Need> {
 pub fn all(headset_on: bool) -> Vec<Need> {
     let supported = supported_if(headset_on);
     let mut found = group(&usb_hid(Path::new("/sys/bus/usb/devices")), supported.as_deref());
-    [Helper::OpenLinkHub, Helper::OpenRgb, Helper::HeadsetControl]
+    [Helper::OpenLinkHub, Helper::OpenRgb, Helper::HeadsetControl, Helper::Ratbag]
         .into_iter()
         .map(|h| need(h, found.iter_mut().find(|(x, _)| *x == h).map(|(_, d)| std::mem::take(d)).unwrap_or_default()))
         .collect()
@@ -203,7 +221,11 @@ mod tests {
     use super::*;
 
     fn usb(vendor: &str, id: &str, name: &str) -> Usb {
-        Usb { vendor: vendor.into(), id: id.into(), name: name.into() }
+        Usb { vendor: vendor.into(), id: id.into(), name: name.into(), mouse: false }
+    }
+
+    fn mouse(vendor: &str, id: &str, name: &str) -> Usb {
+        Usb { mouse: true, ..usb(vendor, id, name) }
     }
 
     fn sample() -> Vec<Usb> {
@@ -242,6 +264,16 @@ mod tests {
     fn no_corsair_vendor_no_openlinkhub() {
         let found: Vec<Usb> = sample().into_iter().filter(|u| u.vendor != "1b1c").collect();
         assert!(group(&found, None).iter().all(|(h, _)| *h != Helper::OpenLinkHub));
+    }
+
+    #[test]
+    fn ratbagd_is_suggested_only_for_mice_of_its_brands() {
+        let found = [mouse("046d", "c08b", "G502 HERO"), mouse("1038", "1824", "Rival 600"), mouse("1e7d", "2e4a", "Kone Pure"), mouse("1b1c", "1b34", "DARK CORE RGB PRO"), mouse("1532", "0043", "Viper"), usb("046d", "c33a", "G413 Keyboard")];
+        let g = group(&found, None);
+        let ratbag = g.iter().find(|(h, _)| *h == Helper::Ratbag).map(|(_, d)| d.clone()).unwrap_or_default();
+        assert_eq!(ratbag, vec!["G502 HERO".to_string(), "Rival 600".into(), "Kone Pure".into()]);
+        // Corsair stays with OpenLinkHub alone.
+        assert!(g.iter().any(|(h, d)| *h == Helper::OpenLinkHub && d == &vec!["DARK CORE RGB PRO".to_string()]));
     }
 
     #[test]

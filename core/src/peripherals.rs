@@ -1,6 +1,6 @@
-//! Every peripheral as one entry, with what each source (OpenLinkHub, OpenRGB, HeadsetControl, UPower)
+//! Every peripheral as one entry, with what each source (OpenLinkHub, OpenRGB, HeadsetControl, ratbagd, UPower)
 //! knows about it.
-use crate::{corsair, headset, openrgb, upower};
+use crate::{corsair, headset, openrgb, ratbag, upower};
 
 #[derive(Debug, Clone, Default)]
 pub struct Peripheral {
@@ -11,6 +11,7 @@ pub struct Peripheral {
     pub corsair: Option<corsair::Device>,
     pub rgb: Option<openrgb::Device>,
     pub headset: Option<headset::Headset>,
+    pub mouse: Option<ratbag::Mouse>,
     pub battery: Option<upower::Battery>,
 }
 
@@ -66,13 +67,17 @@ fn attach<T: Clone>(out: &mut Vec<Peripheral>, items: &[T], name: impl Fn(&T) ->
     }
 }
 
-/// Joins what the four sources report; OpenLinkHub's devices come first.
-pub fn merge(corsair: &[corsair::Device], rgb: &[openrgb::Device], headsets: &[headset::Headset], batteries: &[upower::Battery]) -> Vec<Peripheral> {
+/// Joins what the five sources report; OpenLinkHub's devices come first.
+pub fn merge(corsair: &[corsair::Device], rgb: &[openrgb::Device], headsets: &[headset::Headset], mice: &[ratbag::Mouse], batteries: &[upower::Battery]) -> Vec<Peripheral> {
     let mut out: Vec<Peripheral> = corsair.iter().map(|d| Peripheral { name: d.product.clone(), kind: d.kind, corsair: Some(d.clone()), ..Default::default() }).collect();
     attach(&mut out, rgb, |d| &d.name, |p, d| p.rgb = Some(d));
     attach(&mut out, headsets, |h| &h.product, |p, h| {
         p.kind = p.kind.or(Some(2));
         p.headset = Some(h);
+    });
+    attach(&mut out, mice, |m| &m.name, |p, m| {
+        p.kind = p.kind.or(Some(1));
+        p.mouse = Some(m);
     });
     attach(&mut out, batteries, |b| &b.model, |p, b| {
         p.kind = p.kind.or(b.kind_code());
@@ -87,7 +92,8 @@ pub fn peripherals(modules: &[String]) -> Vec<Peripheral> {
     let corsair = if on("corsair") { corsair::devices() } else { Vec::new() };
     let rgb = if on("openrgb") { openrgb::devices() } else { Vec::new() };
     let headsets = if on("headset") { headset::headsets() } else { Vec::new() };
-    merge(&corsair, &rgb, &headsets, &upower::batteries())
+    let mice = if on("mouse") { ratbag::mice() } else { Vec::new() };
+    merge(&corsair, &rgb, &headsets, &mice, &upower::batteries())
 }
 
 #[cfg(test)]
@@ -107,7 +113,7 @@ mod tests {
 
     #[test]
     fn same_mouse_from_two_sources_is_one_entry() {
-        let p = merge(&[], &[rgb("Logitech G502 LIGHTSPEED Wireless Gaming Mouse")], &[], &[bat("G502 LIGHTSPEED Wireless Gaming Mouse", "mouse")]);
+        let p = merge(&[], &[rgb("Logitech G502 LIGHTSPEED Wireless Gaming Mouse")], &[], &[], &[bat("G502 LIGHTSPEED Wireless Gaming Mouse", "mouse")]);
         assert_eq!(p.len(), 1);
         assert!(p[0].rgb.is_some() && p[0].battery.is_some());
         assert_eq!(p[0].kind, Some(1));
@@ -115,26 +121,26 @@ mod tests {
 
     #[test]
     fn similar_names_stay_apart() {
-        let p = merge(&[], &[rgb("Logitech G502 HERO")], &[], &[bat("G502 LIGHTSPEED Wireless Gaming Mouse", "mouse")]);
+        let p = merge(&[], &[rgb("Logitech G502 HERO")], &[], &[], &[bat("G502 LIGHTSPEED Wireless Gaming Mouse", "mouse")]);
         assert_eq!(p.len(), 2);
         // Two identical devices on one side are never matched to the other side.
-        let p = merge(&[], &[rgb("Razer Viper"), rgb("Razer Viper")], &[], &[bat("Razer Viper", "mouse")]);
+        let p = merge(&[], &[rgb("Razer Viper"), rgb("Razer Viper")], &[], &[], &[bat("Razer Viper", "mouse")]);
         assert_eq!(p.len(), 3);
-        let p = merge(&[], &[rgb("Razer Viper")], &[], &[bat("Razer Viper Ultimate", "mouse")]);
+        let p = merge(&[], &[rgb("Razer Viper")], &[], &[], &[bat("Razer Viper Ultimate", "mouse")]);
         assert_eq!(p.len(), 2);
     }
 
     #[test]
     fn corsair_mouse_names_from_two_sources_merge() {
         let d = corsair::Device { serial: "S".into(), product: "DARK CORE RGB PRO".into(), battery: false, kind: Some(1), anc: false, lights: true, lcd: false };
-        let p = merge(&[d], &[rgb("Corsair Dark Core RGB PRO Gaming Mouse")], &[], &[bat("Corsair Dark Core RGB PRO Gaming Mouse", "mouse")]);
+        let p = merge(&[d], &[rgb("Corsair Dark Core RGB PRO Gaming Mouse")], &[], &[], &[bat("Corsair Dark Core RGB PRO Gaming Mouse", "mouse")]);
         assert_eq!(p.len(), 1);
         assert!(p[0].rgb.is_some() && p[0].battery.is_some());
     }
 
     #[test]
     fn different_brands_never_merge() {
-        let p = merge(&[], &[rgb("Razer Viper")], &[], &[bat("Logitech Viper", "mouse")]);
+        let p = merge(&[], &[rgb("Razer Viper")], &[], &[], &[bat("Logitech Viper", "mouse")]);
         assert_eq!(p.len(), 2);
     }
 
@@ -142,9 +148,20 @@ mod tests {
     fn corsair_headset_and_its_headsetcontrol_entry_merge() {
         let d = corsair::Device { serial: "S".into(), product: "VIRTUOSO MAX".into(), battery: true, kind: Some(2), anc: true, lights: true, lcd: false };
         let h = headset::Headset { product: "CORSAIR VIRTUOSO MAX WIRELESS Gaming Receiver".into(), has_sidetone: true, ..Default::default() };
-        let p = merge(&[d], &[], &[h], &[]);
+        let p = merge(&[d], &[], &[h], &[], &[]);
         assert_eq!(p.len(), 1);
         assert!(p[0].corsair.is_some() && p[0].headset.is_some());
+    }
+
+    #[test]
+    fn ratbagd_mouse_joins_the_same_mouse_from_other_sources() {
+        let m = ratbag::Mouse { name: "Logitech G502 HERO".into(), ..Default::default() };
+        let p = merge(&[], &[rgb("Logitech G502 HERO Gaming Mouse")], &[], std::slice::from_ref(&m), &[bat("G502 HERO", "mouse")]);
+        assert_eq!(p.len(), 1);
+        assert!(p[0].rgb.is_some() && p[0].mouse.is_some() && p[0].battery.is_some());
+        assert_eq!(p[0].kind, Some(1));
+        // A mouse ratbagd lists alone is its own card.
+        assert_eq!(merge(&[], &[], &[], &[m], &[]).len(), 1);
     }
 
     #[test]

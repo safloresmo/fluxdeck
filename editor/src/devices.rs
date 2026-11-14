@@ -1,11 +1,11 @@
-//! Peripherals view: one card per device, with the sections that OpenLinkHub, OpenRGB, HeadsetControl
-//! and UPower know about it.
+//! Peripherals view: one card per device, with the sections that OpenLinkHub, OpenRGB, HeadsetControl,
+//! ratbagd and UPower know about it.
 use crate::mic::{card_frame, toggle};
 use fluxdeck_core::corsair::{self, LEVELS, Live};
 use fluxdeck_core::presets::{Env, title};
 use fluxdeck_core::helpers::{self, Fix, Need, State};
 use fluxdeck_core::peripherals::{self, Peripheral};
-use fluxdeck_core::{headset, openrgb, upower};
+use fluxdeck_core::{headset, openrgb, ratbag, upower};
 use fluxdeck_core::i18n::{t, tf};
 use eframe::egui::{self, Color32, RichText, Sense, vec2};
 use std::collections::HashMap;
@@ -25,6 +25,8 @@ enum Write {
     RgbColor(String, String),
     Sidetone(String, u8),
     HeadsetLights(String, bool),
+    MouseDpi(String, u32),
+    MouseProfile(String, u32),
 }
 
 impl Write {
@@ -33,7 +35,7 @@ impl Write {
         let id = match self {
             Write::Lcd(id, _) | Write::Rotation(id, _) | Write::Anc(id, _) | Write::Brightness(id, _) | Write::Effect(id, _) => id,
             Write::RgbEffect(id, _) | Write::RgbBrightness(id, _) | Write::RgbColor(id, _) => id,
-            Write::Sidetone(id, _) | Write::HeadsetLights(id, _) => id,
+            Write::Sidetone(id, _) | Write::HeadsetLights(id, _) | Write::MouseDpi(id, _) | Write::MouseProfile(id, _) => id,
         };
         (std::mem::discriminant(self), id)
     }
@@ -44,11 +46,12 @@ struct Others {
     rgb: Vec<openrgb::Device>,
     batteries: Vec<upower::Battery>,
     headsets: Vec<headset::Headset>,
+    mice: Vec<ratbag::Mouse>,
 }
 
 impl Others {
     fn peripherals(&self, corsair: &[corsair::Device]) -> Vec<Peripheral> {
-        peripherals::merge(corsair, &self.rgb, &self.headsets, &self.batteries)
+        peripherals::merge(corsair, &self.rgb, &self.headsets, &self.mice, &self.batteries)
     }
 }
 
@@ -85,6 +88,7 @@ impl Devices {
         let list = &env.corsair;
         let rgb_on = modules.iter().any(|m| m == "openrgb");
         let headset_on = modules.iter().any(|m| m == "headset");
+        let mouse_on = modules.iter().any(|m| m == "mouse");
         let latest = Arc::new(Mutex::new(None));
         let latest_others = Arc::new(Mutex::new(None));
         let active = Arc::new(AtomicBool::new(false));
@@ -114,7 +118,8 @@ impl Devices {
                         *latest.lock().unwrap() = Some(all);
                         let rgb = if rgb_on { openrgb::devices() } else { Vec::new() };
                         let headsets = if headset_on { headset::headsets() } else { Vec::new() };
-                        *latest_others.lock().unwrap() = Some(Others { rgb, batteries: upower::batteries(), headsets });
+                        let mice = if mouse_on { ratbag::mice() } else { Vec::new() };
+                        *latest_others.lock().unwrap() = Some(Others { rgb, batteries: upower::batteries(), headsets, mice });
                     }
                     std::thread::sleep(Duration::from_millis(1500));
                 }
@@ -146,6 +151,8 @@ impl Devices {
                         Write::RgbColor(id, c) => openrgb::set_color(id, c),
                         Write::Sidetone(id, l) => headset::set_sidetone(id, *l),
                         Write::HeadsetLights(id, on) => headset::set_lights(id, *on),
+                        Write::MouseDpi(id, dpi) => ratbag::mouse(id).ok_or_else(|| format!("ratbagd does not see {id}")).and_then(|m| ratbag::set_dpi(&m, *dpi)),
+                        Write::MouseProfile(id, i) => ratbag::mouse(id).ok_or_else(|| format!("ratbagd does not see {id}")).and_then(|m| ratbag::set_profile(&m, *i).map(|_| ())),
                     };
                     if let Err(e) = r {
                         errors.lock().unwrap().push(e);
@@ -158,7 +165,7 @@ impl Devices {
             list: list.to_vec(),
             shown: HashMap::new(),
             latest,
-            others: Others { rgb: env.rgb.clone(), batteries: env.batteries.clone(), headsets: env.headsets.clone() },
+            others: Others { rgb: env.rgb.clone(), batteries: env.batteries.clone(), headsets: env.headsets.clone(), mice: env.mice.clone() },
             modules: modules.to_vec(),
             enable: None,
             watching,
@@ -267,7 +274,8 @@ impl Devices {
         // OpenLinkHub gives no color: with its lights, OpenRGB only adds the color.
         let rgb = p.rgb.as_ref().filter(|d| d.takes_color() || !corsair_lights && (d.brightness().is_some() || d.effect().is_some()));
         let headset = p.headset.as_ref().filter(|h| h.has_sidetone || h.has_lights);
-        if level.is_none() && live.anc.is_none() && !corsair_lights && live.lcd.is_none() && rgb.is_none() && headset.is_none() {
+        let mouse = p.mouse.as_ref().filter(|m| !m.dpis().is_empty() || m.profiles.len() > 1);
+        if level.is_none() && live.anc.is_none() && !corsair_lights && live.lcd.is_none() && rgb.is_none() && headset.is_none() && mouse.is_none() {
             ui.label(RichText::new(t("Sin ajustes que controlar desde aquí.")).weak().size(12.5));
         }
         if let Some(b) = level {
@@ -281,6 +289,9 @@ impl Devices {
         }
         if let Some(h) = headset {
             self.headset_sections(ui, h, accent);
+        }
+        if let Some(m) = mouse {
+            self.mouse_sections(ui, m);
         }
     }
 
@@ -402,6 +413,45 @@ impl Devices {
             });
         }
         if let Some(slot) = self.others.headsets.iter_mut().find(|x| x.id == h.id) {
+            *slot = live;
+        }
+    }
+
+    fn mouse_sections(&mut self, ui: &mut egui::Ui, m: &ratbag::Mouse) {
+        let mut live = m.clone();
+        if let Some(cur) = m.dpi().filter(|_| !m.dpis().is_empty()) {
+            ui.label("DPI");
+            egui::ComboBox::from_id_salt(("dpi", &m.id)).selected_text(cur.to_string()).width(220.0).show_ui(ui, |ui| {
+                for d in m.dpis() {
+                    if ui.selectable_label(*d == cur, d.to_string()).clicked() && *d != cur {
+                        if let Some(r) = live.resolutions.iter_mut().find(|r| r.active) {
+                            r.dpi = *d;
+                        }
+                        self.send(Write::MouseDpi(m.id.clone(), *d));
+                    }
+                }
+            });
+            ui.add_space(8.0);
+        }
+        let enabled: Vec<&ratbag::Profile> = m.profiles.iter().filter(|p| !p.disabled).collect();
+        if let (true, Some(cur)) = (enabled.len() > 1, m.active_profile()) {
+            let label = |p: &ratbag::Profile| if p.name.is_empty() { format!("{} {}", t("Perfil"), p.index + 1) } else { p.name.clone() };
+            ui.label(t("Perfil"));
+            egui::ComboBox::from_id_salt(("profile", &m.id)).selected_text(label(cur)).width(220.0).show_ui(ui, |ui| {
+                for p in enabled {
+                    if ui.selectable_label(p.active, label(p)).clicked() && !p.active {
+                        for q in live.profiles.iter_mut() {
+                            q.active = q.index == p.index;
+                        }
+                        self.send(Write::MouseProfile(m.id.clone(), p.index));
+                    }
+                }
+            });
+            ui.add_space(8.0);
+        }
+        ui.label(RichText::new(t("Sin probar en hardware: cuéntanos si funciona con tu ratón")).weak().size(12.0));
+        // The new values show until ratbagd's next reading.
+        if let Some(slot) = self.others.mice.iter_mut().find(|x| x.id == m.id) {
             *slot = live;
         }
     }

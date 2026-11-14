@@ -60,7 +60,7 @@ plugins. Lo que apagas desaparece del editor y no corre en el servicio.
 
 **Periféricos y más**
 - Módulo Corsair (a través de OpenLinkHub): batería, cancelación de ruido y luces.
-- Otras marcas: luces con OpenRGB, auriculares con HeadsetControl y baterías inalámbricas con UPower.
+- Otras marcas: luces con OpenRGB, auriculares con HeadsetControl, ratones con ratbagd y baterías inalámbricas con UPower.
 - Inicio con el estado de todo, avisos y controles rápidos del micrófono y los grupos; tema del
   escritorio, oscuro, claro o propio; español e inglés.
 - Perfiles que cambian página, volúmenes o un comando según la app que usas; se crean desde una
@@ -79,8 +79,8 @@ Fedora 36+, Arch, openSUSE Tumbleweed…). Necesitas `fontconfig`, `libudev` (sy
 con `wpctl`, `pw-dump` y `pw-record`: el volumen, el mezclador y los efectos no funcionan con
 PulseAudio solo (Ubuntu 22.04 lo trae de serie; desde 22.10 ya viene PipeWire).
 Opcionales, y los paquetes los recomiendan: `curl` (tiendas de íconos y de plugins), `tar`
-(respaldo), `bsdtar` o `unzip` (instalar plugins), `upower` (baterías inalámbricas) y `xprop` (perfiles en
-X11).
+(respaldo), `bsdtar` o `unzip` (instalar plugins), `upower` (baterías inalámbricas), `xprop` (perfiles en
+X11) y `ratbagd` (DPI y perfil de ratones; en Arch se llama `libratbag` y en Fedora `libratbag-ratbagd`).
 
 En [Releases](https://github.com/safloresmo/fluxdeck/releases) (Linux x86_64):
 
@@ -292,6 +292,9 @@ el módulo.
   [otros](https://github.com/Sapd/HeadsetControl#supported-headsets)): con
   [HeadsetControl](https://github.com/Sapd/HeadsetControl) instalado. Se activa en *Módulos* o con
   `"headset"` en `modules`. Batería, retorno de voz y luces.
+- **Ratones** (Logitech, SteelSeries, Roccat y [otros](https://github.com/libratbag/libratbag/tree/master/data/devices)):
+  con [ratbagd](https://github.com/libratbag/libratbag) instalado. Se activa en *Módulos* o con
+  `"mouse"` en `modules`. DPI y perfil. Sin probar en hardware: cuéntanos si funciona con tu ratón.
 - **Baterías** de ratones, teclados y controles inalámbricos: siempre, si UPower las ve (los
   Logitech con receptor Unifying o Lightspeed y lo conectado por Bluetooth, por ejemplo).
 
@@ -303,6 +306,9 @@ fluxdeck rgb brightness 'NOMBRE' up
 fluxdeck headset list
 fluxdeck headset sidetone VENDOR:PRODUCT up
 fluxdeck headset lights VENDOR:PRODUCT toggle
+fluxdeck mouse list
+fluxdeck mouse dpi usb:VENDOR:PRODUCT:0 up
+fluxdeck mouse profile usb:VENDOR:PRODUCT:0 next
 fluxdeck battery list
 fluxdeck battery 'MODELO'
 ```

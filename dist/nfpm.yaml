@@ -39,8 +39,11 @@ overrides:
     # Optional: curl (icon and plugin stores), libarchive-tools (bsdtar, plugins), upower (wireless
     # batteries), x11-utils (xprop, profiles on X11).
     recommends: [pipewire, wireplumber, pipewire-pulse, curl, tar, libarchive-tools, upower, x11-utils]
+    # ratbagd (mice of many brands) is in Debian and Ubuntu under this name.
+    suggests: [ratbagd]
   rpm:
     # The library itself: Fedora ships it in systemd-libs, openSUSE in libudev1.
     depends: ["libudev.so.1()(64bit)", fontconfig]
     # bsdtar and xprop are left out: their package names are not checked on both Fedora and openSUSE yet.
     recommends: [pipewire, wireplumber, pipewire-pulseaudio, curl, tar, upower]
+    # ratbagd is left out: Fedora calls it libratbag-ratbagd and openSUSE ratbagd, and one rpm serves both.

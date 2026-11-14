@@ -612,7 +612,7 @@ impl App {
         let env = presets::Env::detect(&self.cfg.modules);
         self.presets = presets::all(&env);
         self.devices = devices::Devices::new(&env, &self.cfg.modules);
-        if self.view == View::Devices && !["corsair", "openrgb", "headset"].iter().any(|m| self.cfg.module(m)) && env.batteries.is_empty() {
+        if self.view == View::Devices && !["corsair", "openrgb", "headset", "mouse"].iter().any(|m| self.cfg.module(m)) && env.batteries.is_empty() {
             self.view = View::Deck;
         }
     }
@@ -2307,6 +2307,16 @@ impl App {
         });
         if headsets && !fluxdeck_core::headset::installed() {
             ui.label(RichText::new(t("HeadsetControl no está instalado: github.com/Sapd/HeadsetControl")).weak().size(12.5));
+        }
+        let mut mice = self.cfg.module("mouse");
+        setting(ui, card, t("Ratones de otras marcas"), t("DPI y perfil de ratones Logitech, SteelSeries, Roccat y más, a través de ratbagd"), |ui| {
+            if toggle_switch(ui, &mut mice) {
+                self.cfg.set_module("mouse", mice);
+                self.redetect();
+            }
+        });
+        if mice && !fluxdeck_core::ratbag::installed() {
+            ui.label(RichText::new(t("ratbagd no está instalado: github.com/libratbag/libratbag")).weak().size(12.5));
         }
     }
 
