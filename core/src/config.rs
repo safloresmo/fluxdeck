@@ -94,6 +94,20 @@ pub fn remember_model(model: &str) {
     }
 }
 
+/// Serial number of the last deck the service drove, kept next to the model.
+pub fn saved_deck() -> String {
+    std::fs::read_to_string(crate::paths::state().join("deck")).map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
+/// Writes the serial only when it differs from the saved one.
+pub fn remember_deck(serial: &str) {
+    if saved_deck() != serial {
+        let dir = crate::paths::state();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("deck"), serial);
+    }
+}
+
 /// The parts of FluxDeck someone can do without: (id, name, what it is).
 pub const PARTS: [(&str, &str, &str); 7] = [
     ("deck", "Stream Deck", "Las teclas, perillas y la pantalla del deck"),

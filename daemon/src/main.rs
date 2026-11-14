@@ -5,6 +5,7 @@ mod lock;
 mod rgbcmd;
 mod batterycmd;
 mod headsetcmd;
+mod mousecmd;
 mod effectscmd;
 mod effectsrun;
 mod extrakeys;
@@ -83,6 +84,7 @@ fn main() {
         Some("rgb") => Some(rgbcmd::command(&args[1..])),
         Some("battery") => Some(batterycmd::command(&args[1..])),
         Some("headset") => Some(headsetcmd::command(&args[1..])),
+        Some("mouse") => Some(mousecmd::command(&args[1..])),
         Some("plugin") => Some(plugincmd::command(&args[1..])),
         Some("effects") => Some(effectscmd::command(&args[1..])),
         Some("mix") => Some(mixcmd::command(&args[1..])),
@@ -165,8 +167,8 @@ fn daemon() {
     let mut failing = false;
     loop {
         let _ = refresh_device_list(&mut hid);
-        // shortcut: drives only the first deck found; loop over all of them when someone has two.
-        match list_devices(&hid).into_iter().next() {
+        // shortcut: drives one deck at a time, the last used one when there are several.
+        match pick(list_devices(&hid), &config::saved_deck()) {
             Some((kind, serial)) => {
                 waiting = false;
                 match StreamDeck::connect(&hid, kind, &serial) {
@@ -174,6 +176,7 @@ fn daemon() {
                         failing = false;
                         eprintln!("fluxdeck: connected to {kind:?} ({serial})");
                         config::remember_model(&format!("{kind:?}"));
+                        config::remember_deck(&serial);
                         if let Err(e) = Session::new(Some(deck), kind, tx.clone(), host.clone(), &serial, fluxdeck_core::remote::MAIN).run(&rx, || false) {
                             eprintln!("fluxdeck: lost the deck: {e}");
                         }
@@ -195,6 +198,12 @@ fn daemon() {
         }
         thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// The deck with the preferred serial if it is among those found, else the first.
+fn pick<K>(found: Vec<(K, String)>, preferred: &str) -> Option<(K, String)> {
+    let at = found.iter().position(|(_, s)| s == preferred).unwrap_or(0);
+    found.into_iter().nth(at)
 }
 
 /// Sends Reload whenever config.toml or theme.toml change. Kept alive by the caller.
@@ -1326,6 +1335,33 @@ pub(crate) mod tests {
             assert_eq!(s.dials_here().count(), kind.encoder_count() as usize, "{kind:?}");
             assert_eq!(s.instances(None).len(), (kind.key_count() + kind.encoder_count()) as usize, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn picks_the_preferred_deck_or_the_first() {
+        let one = vec![(1, "A".to_string())];
+        let two = vec![(1, "A".to_string()), (2, "B".to_string())];
+        assert_eq!(pick(one, "B"), Some((1, "A".into())));
+        assert_eq!(pick(two.clone(), "B"), Some((2, "B".into())));
+        assert_eq!(pick(two, "Z"), Some((1, "A".into())));
+        assert_eq!(pick::<u8>(Vec::new(), "A"), None);
+    }
+
+    #[test]
+    fn the_deck_serial_is_kept_only_when_it_changes() {
+        let _env = isolate();
+        let file = fluxdeck_core::paths::state().join("deck");
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(config::saved_deck(), "");
+        config::remember_deck("A1");
+        assert_eq!(config::saved_deck(), "A1");
+        let at = std::fs::metadata(&file).unwrap().modified().unwrap();
+        config::remember_deck("A1");
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), at);
+        config::remember_deck("B2");
+        assert_eq!(config::saved_deck(), "B2");
+        assert!(!config::path().exists(), "config.toml is never written");
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]
